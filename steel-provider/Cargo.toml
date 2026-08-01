@@ -1,0 +1,23 @@
+[package]
+name = "steel-provider"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rayon = "1.12.0"
+steel-core = { git = "https://github.com/Steel-Foundation/SteelMC", version = "0.15.2" }
+steel-worldgen = { git = "https://github.com/Steel-Foundation/SteelMC", version = "0.15.2" }
+steel-registry = { git = "https://github.com/Steel-Foundation/SteelMC", version = "0.15.2" }
+steel-utils = { git = "https://github.com/Steel-Foundation/SteelMC", version = "0.15.2" }
+steel-protocol = { git = "https://github.com/Steel-Foundation/SteelMC", version = "0.15.2" }
+tokio = "1.53.1"
+toml = "1.1.4"
+rustc-hash = "2.1.3"
+glam = "0.33.2"
+opaque-pointer = "0.10.1"
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.dev.package.steel-registry]
+opt-level = 3
