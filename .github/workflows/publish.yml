@@ -22,8 +22,6 @@ jobs:
             steel-provider/target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
       - uses: gradle/actions/setup-gradle@v6
-        with:
-          build-root-directory: java-client
       - run: mise run publish
         env:
           REPOSILITE_USERNAME: ${{ secrets.REPOSILITE_USERNAME }}
