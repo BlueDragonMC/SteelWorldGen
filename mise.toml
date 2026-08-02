@@ -5,6 +5,7 @@ lockfile = true
 "cargo:cbindgen" = "latest"
 gradle = "9.6"
 java = "25"
+rust = "nightly-2026-07-23"
 
 [tools."http:jextract"]
 version = "25-jextract+2-4"
