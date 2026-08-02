@@ -1,8 +1,10 @@
 mod c_api;
 
-use std::sync::{Arc, Mutex, Once, Weak};
+use std::collections::{hash_map::Entry, VecDeque};
+use std::sync::{Arc, Mutex, Once, RwLock, Weak};
 
 use glam::IVec3;
+use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -30,6 +32,11 @@ const MIN_Y: i32 = -64;
 const HEIGHT: i32 = 384;
 const SECTION_COUNT: usize = (HEIGHT / 16) as usize;
 
+/// Number of persistent chunk holders/mutexes kept before eviction. Eviction is
+/// gated against in-flight generation (see [`WorldgenContext::eviction_gate`]),
+/// so clearing these maps can never strand an entry another call is using.
+const EVICTION_THRESHOLD: usize = 10_000;
+
 static INIT: Once = Once::new();
 
 /// Initialize global SteelMC registries and behaviors.
@@ -56,12 +63,28 @@ pub struct WorldgenContext {
     /// holders between chunk generations. We replicate this by storing holders
     /// in the context and reusing them across generate_with_structures calls.
     holders: Mutex<FxHashMap<(i32, i32), Arc<ChunkHolder>>>,
+    /// Insertion order of the persistent holders, used for bounded FIFO eviction.
+    /// Every entry here corresponds to one `holders` key; eviction pops from the
+    /// front (least-recently-created first) until the cache is back under the
+    /// threshold instead of clearing the whole map.
+    holder_order: Mutex<VecDeque<(i32, i32)>>,
     /// Tracks which chunks' feature decoration passes have been run.
     /// Each chunk's pass runs exactly once and writes to itself and neighbors.
     decoration_passes_run: Mutex<FxHashSet<(i32, i32)>>,
     /// Per-position mutexes to synchronize concurrent generation of the same chunk.
     /// Cleaned up periodically to prevent unbounded growth.
     generation_mutexes: Mutex<FxHashMap<(i32, i32), Arc<Mutex<()>>>>,
+    /// Dedicated thread pool used to parallelize the per-call 7x7 chunk
+    /// generation. Minestom calls [`WorldgenContext::generate_with_structures`]
+    /// concurrently on many virtual threads; funnelling the heavy worldgen work
+    /// through this single bounded pool keeps CPU usage predictable while still
+    /// parallelizing the many chunk generations inside a single call.
+    generation_pool: Arc<rayon::ThreadPool>,
+    /// Gates eviction of `holders`/`generation_mutexes` against in-flight
+    /// generation. Every call holds a read guard for the duration of its work;
+    /// eviction takes the write guard, guaranteeing no other call is using a
+    /// holder/mutex at the moment the maps are cleared.
+    eviction_gate: RwLock<()>,
 }
 
 impl WorldgenContext {
@@ -121,13 +144,29 @@ impl WorldgenContext {
         // clones of both.
         drop(runtime);
 
+        let generation_pool = Arc::new(
+            ThreadPoolBuilder::new()
+                .num_threads(
+                    std::thread::available_parallelism()
+                        .map(|n| n.get())
+                        .unwrap_or(4)
+                        .min(16),
+                )
+                .thread_name(|_| "steelgen".into())
+                .build()
+                .expect("failed to create rayon generation pool"),
+        );
+
         Self {
             generator,
             world,
             seed,
             holders: Mutex::new(FxHashMap::default()),
+            holder_order: Mutex::new(VecDeque::new()),
             decoration_passes_run: Mutex::new(FxHashSet::default()),
             generation_mutexes: Mutex::new(FxHashMap::default()),
+            generation_pool,
+            eviction_gate: RwLock::new(()),
         }
     }
 
@@ -232,6 +271,40 @@ impl WorldgenContext {
     /// created.
     #[must_use]
     pub fn generate_with_structures(&self, chunk_x: i32, chunk_z: i32) -> ProtoChunk {
+        // Evict stale holders/mutexes before taking the shared generation gate.
+        // The write guard excludes concurrent generation, so evicting can never
+        // remove an entry another in-flight call is still using. We check only
+        // `holders` here: every generation mutex key is a holder key, so the
+        // mutex map can never outgrow it. Evict the least-recently-created
+        // holders (FIFO) down to half the threshold so the persistent cache
+        // survives future lookups instead of being fully cleared (a wholesale
+        // clear forces re-generation of every subsequent chunk).
+        if self.holders.lock().unwrap().len() > EVICTION_THRESHOLD {
+            let _gate = self.eviction_gate.write().unwrap();
+            let mut holders = self.holders.lock().unwrap();
+            let mut mutexes = self.generation_mutexes.lock().unwrap();
+            let mut order = self.holder_order.lock().unwrap();
+            while holders.len() > EVICTION_THRESHOLD / 2 {
+                let Some(pos) = order.pop_front() else {
+                    break;
+                };
+                if holders.remove(&pos).is_some() {
+                    mutexes.remove(&pos);
+                }
+            }
+            // Defensive fallback if the order bookkeeping ever drifts: clearing
+            // is still gated, so no in-flight call is affected.
+            if holders.len() > EVICTION_THRESHOLD {
+                holders.clear();
+                mutexes.clear();
+                order.clear();
+            }
+        }
+
+        // Hold the read guard for the whole call so no other call can evict a
+        // holder/mutex while this call is still using it.
+        let _eviction_gate = self.eviction_gate.read().unwrap();
+
         let center = ChunkPos::new(chunk_x, chunk_z);
         // Feature decoration writes within radius 1, and each decoration pass
         // reads from neighbors within distance 1. We run passes in a 5x5 area
@@ -243,74 +316,78 @@ impl WorldgenContext {
         // We need holders at Carvers status for feature decoration to write into them.
         let mut holders_guard = self.holders.lock().unwrap();
         let mut neighborhood_holders = Vec::new();
+        let mut new_holder_positions = Vec::new();
 
         for dx in -FEATURE_RADIUS..=FEATURE_RADIUS {
             for dz in -FEATURE_RADIUS..=FEATURE_RADIUS {
                 let pos = (chunk_x + dx, chunk_z + dz);
-                let holder = holders_guard
-                    .entry(pos)
-                    .or_insert_with(|| {
-                        Arc::new(ChunkHolder::new(
+                let holder = match holders_guard.entry(pos) {
+                    Entry::Occupied(entry) => entry.get().clone(),
+                    Entry::Vacant(entry) => {
+                        let holder = Arc::new(ChunkHolder::new(
                             ChunkPos::new(pos.0, pos.1),
                             ChunkTicketLevel::STRONGEST,
                             None,
                             MIN_Y,
                             HEIGHT,
-                        ))
-                    })
-                    .clone();
+                        ));
+                        entry.insert(holder.clone());
+                        new_holder_positions.push(pos);
+                        holder
+                    }
+                };
                 neighborhood_holders.push((pos, holder));
             }
         }
         drop(holders_guard);
 
-        // Simple eviction to prevent unbounded growth (keep last ~10000 holders)
-        if self.holders.lock().unwrap().len() > 10000 {
-            self.holders.lock().unwrap().clear();
-        }
-
-        // Clean up old generation mutexes periodically
-        if self.generation_mutexes.lock().unwrap().len() > 10000 {
-            self.generation_mutexes.lock().unwrap().clear();
+        // Record insertion order after releasing the holders lock so eviction's
+        // holders→order lock ordering is never reversed.
+        if !new_holder_positions.is_empty() {
+            self.holder_order.lock().unwrap().extend(new_holder_positions);
         }
 
         // For each holder in the neighborhood, ensure it's generated up to Carvers status.
         // We do this by running the generation pipeline on any that haven't reached Carvers yet.
         // Use per-position mutex to prevent concurrent generation of the same chunk.
+        // Per-chunk generation inside SteelMC is serial, so generating the 49
+        // holders in parallel (each guarded by its position mutex) scales near-
+        // linearly across cores.
         let generator = &self.generator;
+        let generation_pool = Arc::clone(&self.generation_pool);
+        generation_pool.install(|| {
+            neighborhood_holders.par_iter().for_each(|(pos, holder)| {
+                // Skip if already at Carvers
+                if holder.try_chunk(ChunkStatus::Carvers).is_some() {
+                    return;
+                }
+                if holder.persisted_status().is_some() {
+                    return;
+                }
 
-        for (pos, holder) in &neighborhood_holders {
-            // Skip if already at Carvers
-            if holder.try_chunk(ChunkStatus::Carvers).is_some() {
-                continue;
-            }
-            if holder.persisted_status().is_some() {
-                continue;
-            }
+                // Get or create the mutex for this position
+                let gen_mutex = {
+                    let mut mutexes = self.generation_mutexes.lock().unwrap();
+                    mutexes
+                        .entry(*pos)
+                        .or_insert_with(|| Arc::new(Mutex::new(())))
+                        .clone()
+                };
 
-            // Get or create the mutex for this position
-            let gen_mutex = {
-                let mut mutexes = self.generation_mutexes.lock().unwrap();
-                mutexes
-                    .entry(*pos)
-                    .or_insert_with(|| Arc::new(Mutex::new(())))
-                    .clone()
-            };
+                // Lock the mutex for this position and check/generate atomically
+                let _guard = gen_mutex.lock().unwrap();
 
-            // Lock the mutex for this position and check/generate atomically
-            let _guard = gen_mutex.lock().unwrap();
+                // Double-check after acquiring the lock
+                if holder.try_chunk(ChunkStatus::Carvers).is_some() {
+                    return;
+                }
+                if holder.persisted_status().is_some() {
+                    return;
+                }
 
-            // Double-check after acquiring the lock
-            if holder.try_chunk(ChunkStatus::Carvers).is_some() {
-                continue;
-            }
-            if holder.persisted_status().is_some() {
-                continue;
-            }
-
-            // Generate the chunk up to Carvers
-            self.generate_chunk_up_to_carvers(pos.0, pos.1, holder.clone(), generator);
-        }
+                self.generate_chunk_up_to_carvers(pos.0, pos.1, holder.clone(), generator);
+            });
+        });
 
         // Now all neighborhood holders are at least at Carvers status.
         // Run feature decoration passes for each chunk in the 3x3 area around the target chunk.
@@ -394,10 +471,9 @@ impl WorldgenContext {
         }
 
         // Extract the target chunk from the live holder (decorations already applied)
-        let target_holder = neighborhood_holders
-            .iter()
-            .find(|(p, _)| *p == (chunk_x, chunk_z))
-            .map(|(_, h)| Arc::clone(h))
+        let target_holder = holders_map
+            .get(&(chunk_x, chunk_z))
+            .map(|h| Arc::clone(h))
             .expect("target holder must exist");
 
         let chunk_access = target_holder
@@ -406,6 +482,17 @@ impl WorldgenContext {
         let ChunkAccess::Proto(proto) = &*chunk_access else {
             unreachable!("chunk should still be Proto at Carvers status");
         };
+
+        // Finalize the holder's sections before cloning so we copy compact
+        // palettes instead of building-mode 8 KB cubes, and so each clone's
+        // recalculate_counts has no 4096-cell scan to redo. Later decoration
+        // passes re-enter building mode, so this mainly benefits repeated
+        // extractions of an already-decorated chunk.
+        for section in &proto.sections.sections {
+            let mut guard = section.write();
+            guard.states.finalize_building();
+            guard.biomes.finalize_building();
+        }
 
         // Clone sections out of the holder
         let sections: Vec<ChunkSection> = proto
@@ -423,13 +510,23 @@ impl WorldgenContext {
             })
             .collect();
 
-        ProtoChunk::new(
+        // Carry the holder's final heightmaps into the returned proto. The
+        // holder's heightmaps are primed before decoration and kept up to date
+        // by every decoration write (Carvers-status chunks update final
+        // heightmaps), so LevelChunk::from_proto can skip re-scanning the
+        // sections for them. If they are absent (e.g. the holder was evicted
+        // and regenerated after its pass already ran), from_proto's normal
+        // fallback recomputes them, so this is purely an optimization.
+        let chunk = ProtoChunk::new(
             Sections::from_owned(sections.into_boxed_slice()),
             center,
             MIN_Y,
             HEIGHT,
             Weak::new(),
-        )
+        );
+        *chunk.heightmaps.write() = proto.heightmaps.read().clone();
+
+        chunk
     }
 
     /// Generate a single chunk up to Carvers status (noise, surface, carvers).
@@ -505,6 +602,7 @@ pub fn encode_chunk_packet(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use steel_core::chunk::heightmap::{HeightmapType, ProtoHeightmaps};
     use steel_registry::vanilla_blocks;
     use steel_utils::BlockPos;
 
@@ -583,5 +681,63 @@ mod tests {
             differing, 0,
             "feature decoration is nondeterministic: {differing} blocks differ between runs"
         );
+    }
+
+    #[test]
+    fn extract_light_data_is_empty_when_light_uncomputed() {
+        initialize();
+
+        let ctx = WorldgenContext::new(42);
+        let chunk = ctx.generate_with_structures(0, 0);
+        let promoted = promote(chunk);
+
+        // Light is never computed by the generation pipeline (it stops at
+        // Carvers), so the chunk's light sections are all "missing" and
+        // extract_light_data must produce all-zero masks and no updates.
+        let light = promoted.chunk.extract_light_data(true);
+        for mask in [
+            &light.sky_y_mask,
+            &light.block_y_mask,
+            &light.empty_sky_y_mask,
+            &light.empty_block_y_mask,
+        ] {
+            assert!(
+                mask.0.iter().all(|word| *word == 0),
+                "light mask must have no bits set, got {mask:?}"
+            );
+        }
+        assert!(light.sky_updates.is_empty());
+        assert!(light.block_updates.is_empty());
+    }
+
+    #[test]
+    fn carried_heightmaps_match_fresh_recompute() {
+        initialize();
+
+        let ctx = WorldgenContext::new(42);
+        let chunk = ctx.generate_with_structures(0, 0);
+
+        // The extracted chunk carries the holder's incrementally-maintained
+        // final heightmaps. They must match a fresh scan of the extracted
+        // sections; if they diverge, the carried data is stale and rendering
+        // would be wrong.
+        let carried = chunk.heightmaps.read().clone();
+        let mut fresh = ProtoHeightmaps::new();
+        fresh.prime_from_sections(
+            HeightmapType::final_types(),
+            MIN_Y,
+            HEIGHT,
+            &chunk.sections.sections,
+        );
+
+        for hm_type in HeightmapType::final_types() {
+            let a = carried.get(*hm_type).map(|h| *h.raw_data());
+            let b = fresh.get(*hm_type).map(|h| *h.raw_data());
+            assert_eq!(
+                a,
+                b,
+                "carried {hm_type:?} heightmap diverges from a fresh recompute"
+            );
+        }
     }
 }
