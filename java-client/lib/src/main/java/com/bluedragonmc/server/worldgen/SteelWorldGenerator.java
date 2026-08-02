@@ -17,7 +17,6 @@ import org.jspecify.annotations.NonNull;
 
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
-import java.lang.foreign.ValueLayout;
 import java.lang.ref.Cleaner;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -87,7 +86,7 @@ class SteelWorldGenerator implements Generator, AutoCloseable {
         this.cleanable.clean();
     }
 
-    private byte[] generateChunk(int chunkX, int chunkZ) {
+    private ChunkDataPacket generateChunk(int chunkX, int chunkZ) {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment raw = steel_provider_generate(arena, worldgenContext, chunkX, chunkZ);
             try {
@@ -95,9 +94,12 @@ class SteelWorldGenerator implements Generator, AutoCloseable {
                 MemorySegment ptr = ByteBuffer.ptr(raw);
 
                 int len = Math.toIntExact(lenLong);
-                byte[] bytes = new byte[len];
-                MemorySegment.copy(ptr, ValueLayout.JAVA_BYTE, 0, bytes, 0, len);
-                return bytes;
+                MemorySegment data = ptr.reinterpret(len, arena, null);
+
+                NetworkBuffer nb = NetworkBuffer.wrap(data, 0, len, MinecraftServer.getRegistries());
+                nb.read(NetworkBuffer.VAR_INT); // Frame length
+                nb.read(NetworkBuffer.VAR_INT); // Packet id
+                return ChunkDataPacket.SERIALIZER.read(nb);
             } finally {
                 steel_provider_bytebuf_free(raw);
             }
@@ -109,12 +111,7 @@ class SteelWorldGenerator implements Generator, AutoCloseable {
         if (unit.absoluteStart().chunkX() + 1 != unit.absoluteEnd().chunkX() || unit.absoluteStart().chunkZ() + 1 != unit.absoluteEnd().chunkZ()) {
             throw new IllegalArgumentException("Expected generation unit to be a single chunk");
         }
-        byte[] chunkPacketBytes = generateChunk(unit.absoluteStart().chunkX(), unit.absoluteStart().chunkZ());
-
-        NetworkBuffer nb = NetworkBuffer.wrap(chunkPacketBytes, 0, chunkPacketBytes.length, MinecraftServer.getRegistries());
-        nb.read(NetworkBuffer.VAR_INT); // Frame length
-        nb.read(NetworkBuffer.VAR_INT); // Packet id
-        ChunkDataPacket p = ChunkDataPacket.SERIALIZER.read(nb);
+        ChunkDataPacket p = generateChunk(unit.absoluteStart().chunkX(), unit.absoluteStart().chunkZ());
 
         ChunkData cd = p.chunkData();
 
