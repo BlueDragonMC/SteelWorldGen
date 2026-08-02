@@ -35,6 +35,7 @@ cp -fv "steel-provider/target/${PROFILE}/libsteel_provider.so" java-client/lib/s
 """
 
 [tasks.generate-header]
+depends = ["compile-rust"]
 #sources = ["steel-provider/src/**", "steel-provider/Cargo.lock", "steel-provider/Cargo.toml"]
 outputs = []
 dir = "steel-provider"
