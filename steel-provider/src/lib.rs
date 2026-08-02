@@ -1,17 +1,16 @@
 mod c_api;
 
-use std::sync::{Arc, Once, Weak};
+use std::sync::{Arc, Mutex, Once, Weak};
 
 use glam::IVec3;
 use rayon::ThreadPoolBuilder;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use steel_core::behavior::init_behaviors;
 use steel_core::block_entity::init_block_entities;
 use steel_core::chunk::chunk_access::{ChunkAccess, ChunkStatus};
-use steel_core::chunk::chunk_generation_task::StaticCache2D;
 use steel_core::chunk::chunk_holder::ChunkHolder;
-use steel_core::chunk::chunk_pyramid::{GENERATION_PYRAMID};
+use steel_core::chunk::chunk_pyramid::GENERATION_PYRAMID;
 use steel_core::chunk::chunk_ticket_manager::ChunkTicketLevel;
 use steel_core::chunk::level_chunk::{LevelChunk, LevelChunkPromotion};
 use steel_core::chunk::proto_chunk::ProtoChunk;
@@ -23,11 +22,10 @@ use steel_core::worldgen::WorldGenRegion;
 use steel_core::worldgen::{ChunkGenerator, ChunkGeneratorType, VanillaGenerator};
 use steel_registry::vanilla_dimension_types;
 use steel_registry::{REGISTRY, Registry, RegistryEntry};
-use steel_utils::types::{Difficulty, GameType};
-use steel_utils::Identifier;
 use steel_utils::ChunkPos;
+use steel_utils::Identifier;
+use steel_utils::types::{Difficulty, GameType};
 use steel_worldgen::biomes::BiomeSourceKind;
-use steel_worldgen::noise::Beardifier;
 
 const MIN_Y: i32 = -64;
 const HEIGHT: i32 = 384;
@@ -54,94 +52,17 @@ pub struct WorldgenContext {
     generator: Arc<ChunkGeneratorType>,
     world: Arc<World>,
     seed: u64,
-}
-
-fn empty_proto_chunk(
-    pos: (i32, i32),
-    section_count: usize,
-    min_y: i32,
-    height: i32,
-) -> ChunkAccess {
-    let sections: Box<[ChunkSection]> = (0..section_count)
-        .map(|_| ChunkSection::new_empty())
-        .collect::<Vec<_>>()
-        .into_boxed_slice();
-    let proto = ProtoChunk::new(
-        Sections::from_owned(sections),
-        ChunkPos::new(pos.0, pos.1),
-        min_y,
-        height,
-        Weak::new(),
-    );
-    ChunkAccess::Proto(proto)
-}
-
-fn chunk_or_panic(
-    chunks: &FxHashMap<(i32, i32), ChunkAccess>,
-    pos: (i32, i32),
-) -> &ChunkAccess {
-    match chunks.get(&pos) {
-        Some(chunk) => chunk,
-        None => panic!("Missing chunk ({}, {})", pos.0, pos.1),
-    }
-}
-
-fn build_beardifier(
-    chunk: &ChunkAccess,
-    chunks: &FxHashMap<(i32, i32), ChunkAccess>,
-) -> Option<Beardifier> {
-    let pos = chunk.pos();
-    let chunk_x = pos.0.x;
-    let chunk_z = pos.0.y;
-
-    let references = chunk.structure_references();
-
-    let mut source_positions: rustc_hash::FxHashSet<ChunkPos> =
-        rustc_hash::FxHashSet::default();
-    for source_chunks in references.values() {
-        source_positions.extend(source_chunks.iter().copied());
-    }
-    if source_positions.is_empty() {
-        return None;
-    }
-
-    let source_chunk_refs: Vec<&ChunkAccess> = source_positions
-        .iter()
-        .filter_map(|p| chunks.get(&(p.0.x, p.0.y)))
-        .collect();
-    let mut source_indices: rustc_hash::FxHashMap<ChunkPos, usize> =
-        rustc_hash::FxHashMap::default();
-    let mut starts_guards = Vec::with_capacity(source_chunk_refs.len());
-    for source_chunk in &source_chunk_refs {
-        let source_pos = source_chunk.pos();
-        source_indices.insert(source_pos, starts_guards.len());
-        starts_guards.push(source_chunk.structure_starts());
-    }
-
-    let mut starts: Vec<&steel_worldgen::structure::StructureStart> = Vec::new();
-    for (structure_id, source_chunks_ref) in references.iter() {
-        for &source_pos in source_chunks_ref {
-            let Some(&guard_index) = source_indices.get(&source_pos) else {
-                continue;
-            };
-            let guard = &starts_guards[guard_index];
-            if let Some(start) = guard.get(structure_id)
-                && start.chunk_pos == source_pos
-                && start.terrain_adjustment
-                    != steel_registry::structure::TerrainAdjustment::None
-            {
-                starts.push(start);
-            }
-        }
-    }
-
-    if starts.is_empty() {
-        return None;
-    }
-
-    let beardifier =
-        Beardifier::for_structures_in_chunk(starts.iter().copied(), chunk_x, chunk_z);
-    (!beardifier.is_empty()).then_some(beardifier)
+    /// Persistent chunk holders to allow feature decorations to write across
+    /// chunk borders. In SteelMC's normal server path, the ChunkMap persists
+    /// holders between chunk generations. We replicate this by storing holders
+    /// in the context and reusing them across generate_with_structures calls.
+    holders: Mutex<FxHashMap<(i32, i32), Arc<ChunkHolder>>>,
+    /// Tracks which chunks' feature decoration passes have been run.
+    /// Each chunk's pass runs exactly once and writes to itself and neighbors.
+    decoration_passes_run: Mutex<FxHashSet<(i32, i32)>>,
+    /// Per-position mutexes to synchronize concurrent generation of the same chunk.
+    /// Cleaned up periodically to prevent unbounded growth.
+    generation_mutexes: Mutex<FxHashMap<(i32, i32), Arc<Mutex<()>>>>,
 }
 
 impl WorldgenContext {
@@ -162,7 +83,8 @@ impl WorldgenContext {
             &thread_pool,
         )));
 
-        let runtime = Arc::new(tokio::runtime::Runtime::new().expect("failed to create Tokio runtime"));
+        let runtime =
+            Arc::new(tokio::runtime::Runtime::new().expect("failed to create Tokio runtime"));
 
         let dim_type = &vanilla_dimension_types::OVERWORLD;
         let generation_settings = WorldGenerationSettings {
@@ -204,6 +126,60 @@ impl WorldgenContext {
             generator,
             world,
             seed,
+            holders: Mutex::new(FxHashMap::default()),
+            decoration_passes_run: Mutex::new(FxHashSet::default()),
+            generation_mutexes: Mutex::new(FxHashMap::default()),
+        }
+    }
+
+    /// Create a fresh empty sections array for a full-height chunk.
+    fn create_empty_sections(&self) -> Sections {
+        Sections::from_owned(
+            (0..SECTION_COUNT)
+                .map(|_| ChunkSection::new_empty())
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        )
+    }
+
+    /// Run the generation pipeline (biomes → structures → noise → surface → carvers)
+    /// on the given chunk access.
+    fn run_generation_pipeline(
+        &self,
+        chunk_access: &mut ChunkAccess,
+        generator: &Arc<ChunkGeneratorType>,
+    ) {
+        // 1. Biomes
+        generator.create_biomes(chunk_access);
+        if let ChunkAccess::Proto(p) = chunk_access {
+            p.set_status(ChunkStatus::Biomes);
+        }
+
+        // 2. Structure starts (need for structure references in noise)
+        generator.create_structures(chunk_access);
+        if let ChunkAccess::Proto(p) = chunk_access {
+            p.set_status(ChunkStatus::StructureStarts);
+        }
+
+        // 3. Noise (skip beardifier - only needed for structures)
+        generator.fill_from_noise(chunk_access, None);
+        if let ChunkAccess::Proto(p) = chunk_access {
+            p.set_status(ChunkStatus::Noise);
+        }
+
+        // 4. Surface
+        let neighbor_biomes = |q: IVec3| -> u16 {
+            generator.noise_biome(q.x, q.y, q.z).id() as u16
+        };
+        generator.build_surface(chunk_access, &neighbor_biomes);
+        if let ChunkAccess::Proto(p) = chunk_access {
+            p.set_status(ChunkStatus::Surface);
+        }
+
+        // 5. Carvers
+        generator.apply_carvers(chunk_access);
+        if let ChunkAccess::Proto(p) = chunk_access {
+            p.set_status(ChunkStatus::Carvers);
         }
     }
 
@@ -228,50 +204,12 @@ impl WorldgenContext {
     pub fn generate(&self, chunk_x: i32, chunk_z: i32) -> ProtoChunk {
         let pos = ChunkPos::new(chunk_x, chunk_z);
 
-        let sections = Sections::from_owned(
-            (0..SECTION_COUNT)
-                .map(|_| ChunkSection::new_empty())
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-        );
-
+        let sections = self.create_empty_sections();
         let proto = ProtoChunk::new(sections, pos, MIN_Y, HEIGHT, Weak::new());
-        let chunk = ChunkAccess::Proto(proto);
+        let mut chunk = ChunkAccess::Proto(proto);
 
-        // 1. Biomes
-        self.generator.create_biomes(&chunk);
-        if let ChunkAccess::Proto(p) = &chunk {
-            p.set_status(ChunkStatus::Biomes);
-        }
-
-        // 2. Noise terrain + aquifers
-        self.generator.fill_from_noise(&chunk, None);
-        if let ChunkAccess::Proto(p) = &chunk {
-            p.set_status(ChunkStatus::Noise);
-        }
-
-        // 3. Structure starts (markers + bounding boxes)
-        self.generator.create_structures(&chunk);
-        if let ChunkAccess::Proto(p) = &chunk {
-            p.set_status(ChunkStatus::StructureStarts);
-        }
-
-        // 4. Surface rules (grass, sand, gravel, etc.)
-        let neighbor_biomes = |pos: IVec3| -> u16 {
-            self.generator
-                .noise_biome(pos.x, pos.y, pos.z)
-                .id() as u16
-        };
-        self.generator.build_surface(&chunk, &neighbor_biomes);
-        if let ChunkAccess::Proto(p) = &chunk {
-            p.set_status(ChunkStatus::Surface);
-        }
-
-        // 5. Carvers (caves & canyons)
-        self.generator.apply_carvers(&chunk);
-        if let ChunkAccess::Proto(p) = &chunk {
-            p.set_status(ChunkStatus::Carvers);
-        }
+        // Run the shared generation pipeline
+        self.run_generation_pipeline(&mut chunk, &self.generator);
 
         let ChunkAccess::Proto(proto) = chunk else {
             unreachable!("chunk is always proto during generation");
@@ -282,258 +220,195 @@ impl WorldgenContext {
     /// Generate a chunk with full feature decoration including structure
     /// blocks (village houses, etc.), trees, ores, and other features.
     ///
-    /// This generates a 17×17 grid of neighboring chunks through the
-    /// structure-starts stage and a 3×3 grid through noise, surface, and
-    /// carvers before running feature decoration on the target chunk.
+    /// This uses the world's persistent `ChunkMap` to generate a 3×3 area
+    /// around the target chunk, ensuring that feature decorations from
+    /// neighboring chunks (trees, lava pools, etc.) properly write across
+    /// chunk borders. The `ChunkMap` retains holders between calls, so
+    /// decorations persist across multiple `generate_with_structures` calls.
     ///
     /// The returned [`ProtoChunk`] can be promoted with [`promote`].
-    ///
-    /// # Panics
+///
+/// # Panics
     /// Panics if the Tokio runtime, world, or chunk holders cannot be
     /// created.
     #[must_use]
     pub fn generate_with_structures(&self, chunk_x: i32, chunk_z: i32) -> ProtoChunk {
-        const STRUCTURE_RADIUS: i32 = 8;
-        const CARVER_RADIUS: i32 = 1;
+        let center = ChunkPos::new(chunk_x, chunk_z);
+        // Feature decoration writes within radius 1, and each decoration pass
+        // reads from neighbors within distance 1. We run passes in a 5x5 area
+        // (radius 2) around the target, so we need a 7x7 area (radius 3) of
+        // Carvers-status chunks to support all passes' read dependencies.
+        const FEATURE_RADIUS: i32 = 3;
 
-        // Collect positions
-        let mut starts_positions: rustc_hash::FxHashSet<(i32, i32)> =
-            rustc_hash::FxHashSet::default();
-        let mut carver_positions: rustc_hash::FxHashSet<(i32, i32)> =
-            rustc_hash::FxHashSet::default();
-        for dx in -STRUCTURE_RADIUS..=STRUCTURE_RADIUS {
-            for dz in -STRUCTURE_RADIUS..=STRUCTURE_RADIUS {
-                starts_positions.insert((chunk_x + dx, chunk_z + dz));
+        // Get or create holders for the 5x5 neighborhood.
+        // We need holders at Carvers status for feature decoration to write into them.
+        let mut holders_guard = self.holders.lock().unwrap();
+        let mut neighborhood_holders = Vec::new();
+
+        for dx in -FEATURE_RADIUS..=FEATURE_RADIUS {
+            for dz in -FEATURE_RADIUS..=FEATURE_RADIUS {
+                let pos = (chunk_x + dx, chunk_z + dz);
+                let holder = holders_guard
+                    .entry(pos)
+                    .or_insert_with(|| {
+                        Arc::new(ChunkHolder::new(
+                            ChunkPos::new(pos.0, pos.1),
+                            ChunkTicketLevel::STRONGEST,
+                            None,
+                            MIN_Y,
+                            HEIGHT,
+                        ))
+                    })
+                    .clone();
+                neighborhood_holders.push((pos, holder));
             }
         }
-        for dx in -CARVER_RADIUS..=CARVER_RADIUS {
-            for dz in -CARVER_RADIUS..=CARVER_RADIUS {
-                carver_positions.insert((chunk_x + dx, chunk_z + dz));
+        drop(holders_guard);
+
+        // Simple eviction to prevent unbounded growth (keep last ~10000 holders)
+        if self.holders.lock().unwrap().len() > 10000 {
+            self.holders.lock().unwrap().clear();
+        }
+
+        // Clean up old generation mutexes periodically
+        if self.generation_mutexes.lock().unwrap().len() > 10000 {
+            self.generation_mutexes.lock().unwrap().clear();
+        }
+
+        // For each holder in the neighborhood, ensure it's generated up to Carvers status.
+        // We do this by running the generation pipeline on any that haven't reached Carvers yet.
+        // Use per-position mutex to prevent concurrent generation of the same chunk.
+        let generator = &self.generator;
+
+        for (pos, holder) in &neighborhood_holders {
+            // Skip if already at Carvers
+            if holder.try_chunk(ChunkStatus::Carvers).is_some() {
+                continue;
             }
-        }
-
-        // Also need biomes for carver positions + 1 neighbor ring
-        let mut biome_positions: rustc_hash::FxHashSet<(i32, i32)> =
-            rustc_hash::FxHashSet::default();
-        for &(cx, cz) in &carver_positions {
-            for dx in -1..=1 {
-                for dz in -1..=1 {
-                    biome_positions.insert((cx + dx, cz + dz));
-                }
+            if holder.persisted_status().is_some() {
+                continue;
             }
-        }
 
-        // Feature decoration writes are gated to the step's block-state write
-        // radius (1 chunk) around the chunk being decorated, so a chunk
-        // receives feature blocks from its own decoration pass *and* from the
-        // decoration of its eight direct neighbors. Those neighbor passes
-        // write/read up to one chunk beyond their own center, so the holders
-        // at distance 2 must already exist at Carvers status (biomes are
-        // enough for them; terrain is never emitted from this ring) to accept
-        // the cross-border writes without panicking on the dependency gate.
-        let ring_positions: rustc_hash::FxHashSet<(i32, i32)> = biome_positions
-            .iter()
-            .copied()
-            .filter(|pos| !carver_positions.contains(pos))
-            .collect();
-
-        // Create all proto chunks
-        let mut chunks: FxHashMap<(i32, i32), ChunkAccess> =
-            FxHashMap::with_capacity_and_hasher(
-                starts_positions.len(),
-                rustc_hash::FxBuildHasher,
-            );
-        for &pos in &starts_positions {
-            chunks.insert(
-                pos,
-                empty_proto_chunk(pos, SECTION_COUNT, MIN_Y, HEIGHT),
-            );
-        }
-
-        // StructureStarts on all 17x17
-        for chunk in chunks.values() {
-            self.generator.create_structures(chunk);
-        }
-
-        // Biomes on needed positions
-        for &pos in &biome_positions {
-            self.generator
-                .create_biomes(chunk_or_panic(&chunks, pos));
-        }
-
-        // StructureReferences for carver positions
-        for &(target_x, target_z) in &carver_positions {
-            let target_block_x = target_x * 16;
-            let target_block_z = target_z * 16;
-            for source_x in (target_x - STRUCTURE_RADIUS)..=(target_x + STRUCTURE_RADIUS) {
-                for source_z in (target_z - STRUCTURE_RADIUS)..=(target_z + STRUCTURE_RADIUS) {
-                    let Some(source_chunk) = chunks.get(&(source_x, source_z)) else {
-                        continue;
-                    };
-                    let starts = source_chunk.structure_starts();
-                    for (structure_id, start) in starts.iter() {
-                        let Some(bb) = start.bounding_box else {
-                            continue;
-                        };
-                        if bb.intersects_xz(
-                            target_block_x,
-                            target_block_z,
-                            target_block_x + 15,
-                            target_block_z + 15,
-                        ) {
-                            chunk_or_panic(&chunks, (target_x, target_z))
-                                .structure_references_mut()
-                                .entry(structure_id.clone())
-                                .or_default()
-                                .insert(ChunkPos::new(source_x, source_z));
-                        }
-                    }
-                }
-            }
-        }
-
-        // Noise on carver positions (with beardifier from references)
-        let carver_sorted: Vec<(i32, i32)> = {
-            let mut v: Vec<_> = carver_positions.iter().copied().collect();
-            v.sort_unstable();
-            v
-        };
-        for &pos in &carver_sorted {
-            let chunk = chunk_or_panic(&chunks, pos);
-            let beardifier = build_beardifier(chunk, &chunks);
-            self.generator
-                .fill_from_noise(chunk, beardifier.as_ref());
-        }
-
-        // Surface on carver positions
-        let min_qy = MIN_Y >> 2;
-        let total_quarts_y = SECTION_COUNT * 4;
-        for &pos in &carver_sorted {
-            let chunk = chunk_or_panic(&chunks, pos);
-            let neighbor_biomes = |q: IVec3| -> u16 {
-                let cx = q.x >> 2;
-                let cz = q.z >> 2;
-                let neighbor = chunk_or_panic(&chunks, (cx, cz));
-                let sections = neighbor.sections();
-                let local_qx = (q.x - cx * 4) as usize;
-                let local_qz = (q.z - cz * 4) as usize;
-                let qy_clamped =
-                    (q.y - min_qy).clamp(0, i32::try_from(total_quarts_y - 1).unwrap_or(i32::MAX))
-                        as usize;
-                let section_idx = qy_clamped / 4;
-                let local_qy = qy_clamped % 4;
-                sections.sections[section_idx]
-                    .read()
-                    .biomes
-                    .get(local_qx, local_qy, local_qz)
+            // Get or create the mutex for this position
+            let gen_mutex = {
+                let mut mutexes = self.generation_mutexes.lock().unwrap();
+                mutexes
+                    .entry(*pos)
+                    .or_insert_with(|| Arc::new(Mutex::new(())))
+                    .clone()
             };
-            self.generator.build_surface(chunk, &neighbor_biomes);
+
+            // Lock the mutex for this position and check/generate atomically
+            let _guard = gen_mutex.lock().unwrap();
+
+            // Double-check after acquiring the lock
+            if holder.try_chunk(ChunkStatus::Carvers).is_some() {
+                continue;
+            }
+            if holder.persisted_status().is_some() {
+                continue;
+            }
+
+            // Generate the chunk up to Carvers
+            self.generate_chunk_up_to_carvers(pos.0, pos.1, holder.clone(), generator);
         }
 
-        // Carvers on carver positions
-        for &pos in &carver_sorted {
-            let chunk = chunk_or_panic(&chunks, pos);
-            self.generator.apply_carvers(chunk);
-        }
+        // Now all neighborhood holders are at least at Carvers status.
+        // Run feature decoration passes for each chunk in the 3x3 area around the target chunk.
+        // Each chunk's decoration pass runs exactly once and writes to itself
+        // and its neighbors (radius 1). We track which passes have run to
+        // ensure each pass runs only once across all generate_with_structures calls.
+        let feature_step = steel_core::chunk::chunk_pyramid::GENERATION_PYRAMID
+            .get_step_to(ChunkStatus::Features);
 
-        // Build feature holders (one per starts position; carver subset gets
-        // the higher status).
-        let all_holder_positions: Vec<(i32, i32)> =
-            starts_positions.iter().copied().collect();
-        let holders: FxHashMap<(i32, i32), Arc<ChunkHolder>> = all_holder_positions
+        // Use live holders directly for both reading and writing.
+        // The passes run in a fixed order (dx from -1 to 1, dz from -1 to 1),
+        // and each pass runs exactly once (tracked by passes_run).
+        // Running a 3x3 area of passes ensures the target chunk and its 8 neighbors
+        // receive decorations from their neighbors, since each pass writes to radius 1.
+        // The PASS_RADIUS of 1 covers the 3x3 area where features actually write.
+        const PASS_RADIUS: i32 = 1;
+
+        // Build a lookup map for the StaticCache2D once (avoids O(n) linear search per pass).
+        let holders_map: FxHashMap<(i32, i32), Arc<ChunkHolder>> = neighborhood_holders
             .iter()
-            .map(|&pos| {
-                let holder = Arc::new(ChunkHolder::new(
-                    ChunkPos::new(pos.0, pos.1),
-                    ChunkTicketLevel::STRONGEST,
-                    None,
-                    MIN_Y,
-                    HEIGHT,
-                ));
-                let chunk = chunks.remove(&pos).expect("chunk must exist");
-                let status = if carver_positions.contains(&pos)
-                    || ring_positions.contains(&pos)
-                {
-                    ChunkStatus::Carvers
-                } else {
-                    ChunkStatus::StructureStarts
-                };
-                if let ChunkAccess::Proto(ref proto) = chunk {
-                    proto.set_status(status);
-                }
-                holder.insert_chunk(chunk, status);
-                (pos, holder)
-            })
-            .collect();
+            .map(|(pos, h)| (*pos, Arc::clone(h)))
+            .collect::<FxHashMap<_, _>>();
 
-        // Prime final heightmaps and decorate the whole write-radius
-        // neighborhood. Each decoration pass only writes within 1 chunk of its
-        // own center, so decorating the target *and* its eight neighbors with
-        // the shared cache makes cross-border feature blocks (tree canopies,
-        // etc.) land in the target holder instead of being truncated at chunk
-        // borders. Every pass is seeded by its own center, so the result is
-        // deterministic regardless of pass order.
-        let feature_step = GENERATION_PYRAMID.get_step_to(ChunkStatus::Features);
-        let holders_arc =
-            Arc::new(holders);
-        let cache = Arc::new(StaticCache2D::create(
+        let cache = Arc::new(steel_core::chunk::chunk_generation_task::StaticCache2D::create(
             chunk_x,
             chunk_z,
-            STRUCTURE_RADIUS,
+            FEATURE_RADIUS,
             {
-                let holders = Arc::clone(&holders_arc);
-                move |x, z| match holders.get(&(x, z)) {
+                let holders_map = holders_map.clone();
+                move |x, z| match holders_map.get(&(x, z)) {
                     Some(holder) => Arc::clone(holder),
                     None => panic!("Missing feature dependency chunk ({x}, {z})"),
                 }
             },
         ));
 
-        let decoration_radius = feature_step.block_state_write_radius;
-        for dx in -decoration_radius..=decoration_radius {
-            for dz in -decoration_radius..=decoration_radius {
-                let center_pos = ChunkPos::new(chunk_x + dx, chunk_z + dz);
-                let center_holder = Arc::clone(
-                    holders_arc
-                        .get(&(center_pos.0.x, center_pos.0.y))
-                        .expect("feature neighborhood holder must exist"),
-                );
-                {
-                    let center_chunk = center_holder
-                        .try_chunk(ChunkStatus::Carvers)
-                        .expect("feature neighborhood chunk must be at Carvers");
-                    center_chunk.prime_final_heightmaps();
-                }
+        // Track which chunks' decoration passes have been run.
+        // We use a shared set so passes persist across generate_with_structures calls.
+        let mut passes_run = self.decoration_passes_run.lock().unwrap();
 
-                let region_random = self
-                    .generator
-                    .create_worldgen_region_random(self.seed as i64, center_pos);
-                let mut region = WorldGenRegion::new(
-                    &self.world.chunk_map.world_gen_context,
-                    feature_step,
-                    &cache,
-                    center_pos,
-                    region_random,
-                );
-                self.generator.apply_biome_decorations(&mut region);
+        // Run all 9 decoration passes for the 3x3 area around the target chunk.
+        // This ensures the target chunk and its 8 neighbors run their passes,
+        // allowing trees at chunk boundaries to be generated by either chunk's pass.
+        // Forward order (dx=-1..=1, dz=-1..=1) ensures neighbor passes run before
+        // the target chunk's pass, allowing the target to write into neighbors.
+        for dx in -1..=1 {
+            for dz in -1..=1 {
+                let center_pos = ChunkPos::new(chunk_x + dx, chunk_z + dz);
+                let pass_key = (center_pos.0.x, center_pos.0.y);
+
+                // Run this chunk's decoration pass if it hasn't run yet
+                if passes_run.insert(pass_key) {
+                    // Use the pre-built map for O(1) lookup instead of linear search
+                    let center_holder = holders_map
+                        .get(&(center_pos.0.x, center_pos.0.y))
+                        .map(|h| Arc::clone(h))
+                        .expect("feature neighborhood holder must exist");
+
+                    // Prime final heightmaps for feature placement
+                    {
+                        let center_chunk = center_holder
+                            .try_chunk(ChunkStatus::Carvers)
+                            .expect("feature neighborhood chunk must be at Carvers");
+                        center_chunk.prime_final_heightmaps();
+                    }
+
+                    let region_random = generator.create_worldgen_region_random(
+                        self.seed as i64,
+                        center_pos,
+                    );
+                    let mut region = WorldGenRegion::new(
+                        &self.world.chunk_map.world_gen_context,
+                        feature_step,
+                        &cache,
+                        center_pos,
+                        region_random,
+                    );
+                    generator.apply_biome_decorations(&mut region);
+                }
             }
         }
 
-        // Extract the target chunk from its holder
-        let center_holder = Arc::clone(
-            holders_arc
-                .get(&(chunk_x, chunk_z))
-                .expect("center holder must exist"),
-        );
-        let center_chunk = center_holder
-            .try_chunk(ChunkStatus::Empty)
-            .expect("center chunk must exist after feature stage");
-        let ChunkAccess::Proto(proto) = &*center_chunk else {
-            unreachable!("chunk should still be Proto after feature stage");
+        // Extract the target chunk from the live holder (decorations already applied)
+        let target_holder = neighborhood_holders
+            .iter()
+            .find(|(p, _)| *p == (chunk_x, chunk_z))
+            .map(|(_, h)| Arc::clone(h))
+            .expect("target holder must exist");
+
+        let chunk_access = target_holder
+            .try_chunk(ChunkStatus::Carvers)
+            .expect("chunk must be at least at Carvers status");
+        let ChunkAccess::Proto(proto) = &*chunk_access else {
+            unreachable!("chunk should still be Proto at Carvers status");
         };
 
-        // Clone sections out of the holder (take states+biomes palettes,
-        // rebuild section metadata from scratch).
+        // Clone sections out of the holder
         let sections: Vec<ChunkSection> = proto
             .sections
             .sections
@@ -551,11 +426,34 @@ impl WorldgenContext {
 
         ProtoChunk::new(
             Sections::from_owned(sections.into_boxed_slice()),
-            ChunkPos::new(chunk_x, chunk_z),
+            center,
             MIN_Y,
             HEIGHT,
             Weak::new(),
         )
+    }
+
+    /// Generate a single chunk up to Carvers status (noise, surface, carvers).
+    /// This is used to initialize holders in the persistent map.
+    fn generate_chunk_up_to_carvers(
+        &self,
+        chunk_x: i32,
+        chunk_z: i32,
+        holder: Arc<ChunkHolder>,
+        generator: &Arc<ChunkGeneratorType>,
+    ) {
+        let pos = ChunkPos::new(chunk_x, chunk_z);
+
+        // Create a fresh proto chunk and run all generation steps on it locally
+        let sections = self.create_empty_sections();
+        let proto = ProtoChunk::new(sections, pos, MIN_Y, HEIGHT, Weak::new());
+        let mut chunk_access = ChunkAccess::Proto(proto);
+
+        // Run the shared generation pipeline
+        self.run_generation_pipeline(&mut chunk_access, generator);
+
+        // Insert the fully generated chunk at Carvers status
+        holder.insert_chunk(chunk_access, ChunkStatus::Carvers);
     }
 }
 
@@ -586,8 +484,8 @@ pub fn encode_chunk_packet(
     compression: Option<steel_protocol::packet_traits::CompressionInfo>,
 ) -> Vec<u8> {
     use steel_protocol::packet_traits::EncodedPacket;
-    use steel_protocol::utils::ConnectionProtocol;
     use steel_protocol::packets::game::CLevelChunkWithLight;
+    use steel_protocol::utils::ConnectionProtocol;
 
     let promoted = promote(chunk);
     let chunk = promoted.chunk;
@@ -608,6 +506,7 @@ pub fn encode_chunk_packet(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use steel_registry::blocks::block_state_ext::BlockStateExt;
     use steel_registry::vanilla_blocks;
     use steel_utils::BlockPos;
 
@@ -743,5 +642,126 @@ mod tests {
             }
         }
         true
+    }
+
+    #[test]
+    fn debug_leaf_at_minus27_80_16() {
+        initialize();
+
+        let ctx = WorldgenContext::new(42);
+        let mut tree_map: std::collections::HashMap<(i32, i32, i32), String> =
+            std::collections::HashMap::new();
+        for cx in -2..=-2 {
+            for cz in 0..=0 {
+                let chunk = ctx.generate_with_structures(cx, cz);
+                for y in MIN_Y..MIN_Y + HEIGHT {
+                    for z in 0..16 {
+                        for x in 0..16 {
+                            let key = chunk
+                                .get_block_state(BlockPos::new(x, y, z))
+                                .get_block()
+                                .key
+                                .to_string();
+                            if key.contains("log") || key.contains("leaves") {
+                                tree_map.insert((cx * 16 + x, y, cz * 16 + z), key);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        for z in 10..=22 {
+            for y in (74..=86).rev() {
+                let x = -27;
+                let key = tree_map
+                    .get(&(x, y, z))
+                    .cloned()
+                    .unwrap_or_else(|| "air".to_string());
+                if key != "air" {
+                    println!("world ({x}, {y}, {z}) = {key}");
+                }
+            }
+            println!("--- z={z} scan done");
+        }
+
+        println!("=== logs in the area ===");
+        let mut logs: Vec<_> = tree_map
+            .iter()
+            .filter(|((x, _, z), k)| {
+                (-40..=-16).contains(x) && (0..=24).contains(z) && k.contains("log")
+            })
+            .map(|((x, y, z), k)| (x, y, z, k.clone()))
+            .collect();
+        logs.sort();
+        for (x, y, z, k) in logs {
+            println!("log at world ({x}, {y}, {z}) = {k}");
+        }
+
+        println!("=== leaves at x=-27, z 0..=24, y 70..=90 ===");
+        for z in 0..=24 {
+            let mut col: Vec<String> = Vec::new();
+            for y in (70..=90).rev() {
+                if let Some(k) = tree_map.get(&(-27, y, z)) {
+                    if k.contains("leaves") {
+                        col.push(format!("y{y}:{k}"));
+                    }
+                }
+            }
+            if !col.is_empty() {
+                println!("x=-27 z={z}: {}", col.join(", "));
+            }
+        }
+
+        println!("=== canopy box x -34..-24, z 10..=20, y 70..=86 ===");
+        for z in 10..=20 {
+            let mut line: Vec<String> = Vec::new();
+            for y in (70..=86).rev() {
+                for x in -34..=-24 {
+                    if let Some(k) = tree_map.get(&(x, y, z)) {
+                        if k.contains("leaves") {
+                            line.push(format!("({x},y{y})"));
+                        }
+                    }
+                }
+            }
+            if !line.is_empty() {
+                println!("z={z}: {}", line.join(" "));
+            }
+        }
+
+        println!("=== canopy map z 8..=24, x -32..=-22, y 74..=88 ===");
+        for z in 8..=24 {
+            let mut line: Vec<String> = Vec::new();
+            for x in -32..=-22 {
+                let mut ys: Vec<i32> = Vec::new();
+                for y in 74..=88 {
+                    if let Some(k) = tree_map.get(&(x, y, z)) {
+                        if k.contains("leaves") {
+                            ys.push(y);
+                        }
+                    }
+                }
+                if !ys.is_empty() {
+                    line.push(format!("x{x}:y{}-{}", ys.first().unwrap(), ys.last().unwrap()));
+                }
+            }
+            if !line.is_empty() {
+                println!("z={z}: {}", line.join(" "));
+            }
+        }
+
+        println!("=== full tree: all blocks x -32..=-24, z 12..=22, y 58..=90 ===");
+        let mut all: Vec<_> = tree_map
+            .iter()
+            .filter(|((x, y, z), k)| {
+                (-32..=-24).contains(x) && (12..=22).contains(z) && *y >= 58 && (k.contains("log") || k.contains("leaves"))
+            })
+            .map(|((x, y, z), k)| (*x, *y, *z, k.clone()))
+            .collect();
+        all.sort_by_key(|(x, y, z, _)| (*z, *x, *y));
+        for (x, y, z, k) in all {
+            println!("({x}, {y}, {z}) {k}");
+        }
     }
 }

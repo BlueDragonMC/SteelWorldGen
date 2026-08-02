@@ -7,7 +7,9 @@ import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.AtomicReference;
 
-import static com.bluedragonmc.server.worldgen.steel_provider.header_h.steel_provider_init;
+import static com.bluedragonmc.server.worldgen.steel_provider.header_h.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 class EndToEndTest {
@@ -51,5 +53,29 @@ class EndToEndTest {
         System.out.printf("Chunk generation (%d chunks): %.2f ms%n", loaded, genDuration / 1e6);
         System.out.printf("Average per chunk: %.3f ms%n", (genDuration / 1e6) / loaded);
         System.out.printf("Total e2e test: %.2f ms%n", totalDuration / 1e6);
+    }
+
+    @Test void crossBorderTreesSpanChunkBoundary() {
+        MinecraftServer.init();
+        Instance instance = MinecraftServer.getInstanceManager().createInstanceContainer();
+
+        SteelWorldGenProvider.loadNativeLibrary();
+        steel_provider_init();
+        instance.setGenerator(SteelWorldGenProvider.getGenerator(42L));
+
+        // Seed 42: a dark_oak trunk straddles z=16 between chunks (6,0) and (6,1)
+        // at world x=111, y=74..76, and its canopy crosses z=16 at x=82..84, y=77..79.
+        instance.loadChunk(new Pos(5 * 16, 64, 0)).join();
+        instance.loadChunk(new Pos(5 * 16, 64, 16)).join();
+        instance.loadChunk(new Pos(6 * 16, 64, 0)).join();
+        instance.loadChunk(new Pos(6 * 16, 64, 16)).join();
+
+        String leftSide = instance.getBlock(111, 75, 15).key().value();
+        String rightSide = instance.getBlock(111, 75, 16).key().value();
+        assertEquals("dark_oak_log", leftSide, "trunk block south of border");
+        assertEquals("dark_oak_log", rightSide, "trunk block north of border");
+
+        assertTrue(instance.getBlock(83, 77, 15).compare(Block.DARK_OAK_LEAVES), "canopy south of border");
+        assertTrue(instance.getBlock(83, 77, 16).compare(Block.DARK_OAK_LEAVES), "canopy north of border");
     }
 }

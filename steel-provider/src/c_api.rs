@@ -23,9 +23,7 @@ pub extern "C" fn steel_provider_worldgen_ctx_new(seed: u64) -> *mut WorldgenCon
     let ctx_result = catch_unwind(|| WorldgenContext::new(seed));
 
     match ctx_result {
-        Ok(ctx) => {
-            opaque_pointer::raw(ctx).expect("Error trying to lend a pointer")
-        }
+        Ok(ctx) => opaque_pointer::raw(ctx).expect("Error trying to lend a pointer"),
         Err(error) => {
             eprintln!("{:?}", error);
             panic!("panic!")
