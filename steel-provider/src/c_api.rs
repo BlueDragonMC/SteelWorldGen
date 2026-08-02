@@ -69,6 +69,7 @@ pub extern "C" fn steel_provider_worldgen_ctx_free(provider: *mut WorldgenContex
     };
 }
 
+#[cfg(test)]
 mod test {
     use super::*;
 
