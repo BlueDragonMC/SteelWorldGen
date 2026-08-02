@@ -97,8 +97,8 @@ publishing {
     }
     publications {
         create<MavenPublication>("maven") {
-            groupId = "com.bluedragonmc.steelworldgen"
-            artifactId = "common"
+            groupId = "com.bluedragonmc"
+            artifactId = "steelworldgen"
             version = rootVersion
 
             from(components["java"])
