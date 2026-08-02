@@ -3,8 +3,11 @@ package com.bluedragonmc.server.worldgen;
 import net.minestom.server.MinecraftServer;
 import net.minestom.server.coordinate.Pos;
 import net.minestom.server.instance.Instance;
+import net.minestom.server.instance.block.Block;
 import org.junit.jupiter.api.Test;
 
+import java.util.LinkedHashSet;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static com.bluedragonmc.server.worldgen.steel_provider.header_h.*;
@@ -53,6 +56,42 @@ class EndToEndTest {
         System.out.printf("Chunk generation (%d chunks): %.2f ms%n", loaded, genDuration / 1e6);
         System.out.printf("Average per chunk: %.3f ms%n", (genDuration / 1e6) / loaded);
         System.out.printf("Total e2e test: %.2f ms%n", totalDuration / 1e6);
+    }
+
+    @Test void biomesMapToCorrectVanillaKeys() {
+        MinecraftServer.init();
+        Instance instance = MinecraftServer.getInstanceManager().createInstanceContainer();
+
+        SteelWorldGenProvider.loadNativeLibrary();
+        steel_provider_init();
+        instance.setGenerator(SteelWorldGenProvider.getGenerator(42L));
+
+        // SteelMC assigns biome IDs alphabetically (badlands=0, ..., plains=40, ...),
+        // whereas Minestom's biome registry uses vanilla's own non-alphabetical order
+        // (plains=0). If the raw packet IDs were looked up directly against Minestom's
+        // registry, every biome would be mis-translated. This test guards that mapping.
+        int[][] chunks = {{0, 0}, {1, 0}, {0, 1}, {1, 1}, {4, 0}, {-2, 1}, {3, 3}, {5, 5}, {-5, -3}};
+        for (int[] c : chunks) {
+            instance.loadChunk(new Pos(c[0] * 16, 64, c[1] * 16)).join();
+        }
+
+        Set<String> biomes = new LinkedHashSet<>();
+        for (int[] c : chunks) {
+            for (int y = -64; y < 320; y += 4) {
+                for (int dx = 0; dx < 16; dx += 4) {
+                    for (int dz = 0; dz < 16; dz += 4) {
+                        var biome = instance.getBiome(c[0] * 16 + dx, y, c[1] * 16 + dz);
+                        if (biome != null) biomes.add(biome.key().asString());
+                    }
+                }
+            }
+        }
+
+        assertEquals(
+                Set.of("minecraft:beach", "minecraft:dark_forest", "minecraft:river", "minecraft:lush_caves"),
+                biomes,
+                "biomes near spawn (seed 42) must match SteelMC's vanilla biomes, not a misaligned registry lookup"
+        );
     }
 
     @Test void crossBorderTreesSpanChunkBoundary() {

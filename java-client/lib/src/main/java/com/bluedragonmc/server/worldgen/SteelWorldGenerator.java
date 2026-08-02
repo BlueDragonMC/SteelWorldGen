@@ -8,16 +8,46 @@ import net.minestom.server.instance.generator.Generator;
 import net.minestom.server.network.NetworkBuffer;
 import net.minestom.server.network.packet.server.play.ChunkDataPacket;
 import net.minestom.server.network.packet.server.play.data.ChunkData;
+import net.minestom.server.registry.DynamicRegistry;
+import net.minestom.server.registry.RegistryKey;
+import net.minestom.server.world.biome.Biome;
 import org.jspecify.annotations.NonNull;
 
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
 
 import static com.bluedragonmc.server.worldgen.steel_provider.header_h.*;
 
 class SteelWorldGenerator implements Generator, AutoCloseable {
     private final MemorySegment worldgenContext;
+
+    /**
+     * Maps SteelMC biome registry IDs to Minestom biome registry keys.
+     * <p>
+     * SteelMC registers the vanilla biomes in alphabetical order of their keys,
+     * so the biome IDs in its chunk packets are alphabetically ordered. Minestom's
+     * biome registry instead follows vanilla's own (non-alphabetical) ordering.
+     * Looking SteelMC's IDs up directly in Minestom's registry therefore yields
+     * the wrong biomes. Sorting Minestom's biome keys alphabetically reproduces
+     * SteelMC's ID assignment, giving an exact ID-to-key translation.
+     */
+    private static final RegistryKey<Biome>[] BIOMES_BY_STEEL_ID = buildBiomeMapping();
+
+    @SuppressWarnings("unchecked")
+    private static RegistryKey<Biome>[] buildBiomeMapping() {
+        DynamicRegistry<Biome> registry = MinecraftServer.getBiomeRegistry();
+        List<RegistryKey<Biome>> keys = new ArrayList<>(registry.size());
+        for (int id = 0; id < registry.size(); id++) {
+            RegistryKey<Biome> key = registry.getKey(id);
+            if (key != null) keys.add(key);
+        }
+        keys.sort(Comparator.comparing(key -> key.key().asString()));
+        return keys.toArray(new RegistryKey[0]);
+    }
 
     SteelWorldGenerator(long seed) {
         steel_provider_init();
@@ -65,10 +95,10 @@ class SteelWorldGenerator implements Generator, AutoCloseable {
                             Block.fromStateId(state)
                     )
             );
-            section.biomes().getAllPresent((x, y, z, biome) ->
+            section.biomes().getAll((x, y, z, biome) ->
                     unit.modifier().setBiome(
-                            x + unit.absoluteStart().blockX(), baseY + y, z + unit.absoluteStart().blockZ(),
-                            MinecraftServer.getBiomeRegistry().getKey(biome)
+                            x * 4 + unit.absoluteStart().blockX(), baseY + y * 4, z * 4 + unit.absoluteStart().blockZ(),
+                            BIOMES_BY_STEEL_ID[biome]
                     )
             );
             sectionIndex++;
