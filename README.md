@@ -1,5 +1,9 @@
 # SteelWorldGen
 
+![GitHub License](https://img.shields.io/github/license/BlueDragonMC/SteelWorldGen)
+![GitHub last commit](https://img.shields.io/github/last-commit/BlueDragonMC/SteelWorldGen)
+![Minestom version](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2FBlueDragonMC%2FSteelWorldGen%2Fmain%2Fjava-client%2Fgradle%2Flibs.versions.toml&query=%24.versions.minestom&label=Minestom%20Version)
+
 Uses [SteelMC](https://github.com/Steel-Foundation/SteelMC/) as a library to implement vanilla Minecraft world generation in a Minestom world generator.
 
 ## How it works
@@ -17,7 +21,17 @@ Using those bindings, we can call the Rust functions from Java using the [Foreig
 
 ## Installation
 
-SteelWorldGen isn't currently hosted anywhere. You'll need to build it from source as described [below](#building-from-source).
+![Latest version](https://img.shields.io/badge/dynamic/xml?url=https%3A%2F%2Freposilite.bluedragonmc.com%2Freleases%2Fcom%2Fbluedragonmc%2Fsteelworldgen%2Fmaven-metadata.xml&query=%2Fmetadata%2Fversioning%2Flatest&label=Latest%20Version)
+
+```kotlin
+repositories {
+   maven(url = "https://reposilite.bluedragonmc.com/releases")
+}
+
+dependencies {
+   implementation("com.bluedragonmc:steelworldgen:$VERSION")
+}
+```
 
 ## Usage
 

@@ -49,7 +49,7 @@ depends = [
   "copy-library{{ ' --release' if usage.release else '' }}",
   "generate-header",
 ]
-run = "jextract --output java-client/lib/src/generated/java -t com.bluedragonmc.server.worldgen.steel_provider ./steel-provider/target/header.h"
+run = "jextract --output java-client/lib/src/generated/java -t com.bluedragonmc.steelworldgen.steel_provider ./steel-provider/target/header.h"
 
 [tasks.build]
 #sources = ["java-client/lib/**/*", "java-client/gradlew", "java-client/gradlew.bat", "java-client/gradle.properties", "java-client/settings.gradle.kts", "java-client/gradle/**/*"]
@@ -64,7 +64,7 @@ run = "cargo clean"
 
 [tasks.clean-java]
 dir = "java-client"
-run = "gradle clean && rm -rf .gradle build"
+run = "gradle clean && rm -rf .gradle build lib/src/generated"
 
 [tasks.clean]
 depends = ["clean-rust", "clean-java"]
@@ -98,3 +98,13 @@ run = "gradle test"
 usage = 'flag "-r --release" default=#false help="Run all tests in release mode"'
 depends = ["test-rust{{ ' --release' if usage.release else '' }}"]
 depends_post = ["test-java{{ ' --release' if usage.release else '' }}"]
+
+[tasks.publish]
+dir = "java-client"
+depends = ["build --release"]
+run = "gradle publish -PreposiliteUsername=\"$REPOSILITE_USERNAME\" -PreposilitePassword=\"$REPOSILITE_TOKEN\""
+
+[tasks.publishToMavenLocal]
+dir = "java-client"
+depends = ["build --release"]
+run = "gradle publishToMavenLocal"

@@ -1,4 +1,4 @@
-package com.bluedragonmc.server.worldgen;
+package com.bluedragonmc.steelworldgen;
 
 import net.minestom.server.instance.generator.Generator;
 

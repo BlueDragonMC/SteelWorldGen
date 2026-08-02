@@ -1,6 +1,6 @@
-package com.bluedragonmc.server.worldgen;
+package com.bluedragonmc.steelworldgen;
 
-import com.bluedragonmc.server.worldgen.steel_provider.ByteBuffer;
+import com.bluedragonmc.steelworldgen.steel_provider.ByteBuffer;
 import net.minestom.server.MinecraftServer;
 import net.minestom.server.coordinate.Point;
 import net.minestom.server.instance.block.Block;
@@ -22,7 +22,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 
-import static com.bluedragonmc.server.worldgen.steel_provider.header_h.*;
+import static com.bluedragonmc.steelworldgen.steel_provider.header_h.*;
 
 class SteelWorldGenerator implements Generator, AutoCloseable {
     private final MemorySegment worldgenContext;

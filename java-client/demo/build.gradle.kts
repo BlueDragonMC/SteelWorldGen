@@ -36,5 +36,5 @@ tasks.shadowJar {
 }
 
 application {
-    mainClass.set("com.bluedragonmc.server.worldgen.demo.Main")
+    mainClass.set("com.bluedragonmc.steelworldgen.demo.Main")
 }

@@ -1,4 +1,4 @@
-package com.bluedragonmc.server.worldgen;
+package com.bluedragonmc.steelworldgen;
 
 import net.minestom.server.MinecraftServer;
 import net.minestom.server.coordinate.Pos;
@@ -10,7 +10,7 @@ import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
-import static com.bluedragonmc.server.worldgen.steel_provider.header_h.*;
+import static com.bluedragonmc.steelworldgen.steel_provider.header_h.*;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;

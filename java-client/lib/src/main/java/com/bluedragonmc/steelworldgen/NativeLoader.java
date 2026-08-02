@@ -1,4 +1,4 @@
-package com.bluedragonmc.server.worldgen;
+package com.bluedragonmc.steelworldgen;
 
 import java.io.IOException;
 import java.io.InputStream;

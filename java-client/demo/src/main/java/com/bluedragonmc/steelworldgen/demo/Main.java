@@ -1,6 +1,6 @@
-package com.bluedragonmc.server.worldgen.demo;
+package com.bluedragonmc.steelworldgen.demo;
 
-import com.bluedragonmc.server.worldgen.SteelWorldGenProvider;
+import com.bluedragonmc.steelworldgen.SteelWorldGenProvider;
 import net.minestom.server.MinecraftServer;
 import net.minestom.server.coordinate.Pos;
 import net.minestom.server.entity.GameMode;
