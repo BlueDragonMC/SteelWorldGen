@@ -12,7 +12,6 @@ jobs:
       - uses: jdx/mise-action@v4
         with:
           version: "2026.8.0"
-      - run: ls -la ~/.rustup || true
       - uses: actions/cache@v6
         with:
           path: |
@@ -22,7 +21,6 @@ jobs:
             ~/.cargo/git/db/
             steel-provider/target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-      - run: ls -la ~/.rustup || true
       - uses: gradle/actions/setup-gradle@v6
       - run: mise run publish
         env:
