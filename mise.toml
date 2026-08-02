@@ -35,7 +35,8 @@ cp -fv "steel-provider/target/${PROFILE}/libsteel_provider.so" java-client/lib/s
 """
 
 [tasks.generate-header]
-depends = ["compile-rust"]
+depends = ["compile-rust{{ ' --release' if usage.release else '' }}"]
+usage = 'flag "-r --release" default=#false help="Generate Java bindings for a release build"'
 #sources = ["steel-provider/src/**", "steel-provider/Cargo.lock", "steel-provider/Cargo.toml"]
 outputs = []
 dir = "steel-provider"
@@ -48,7 +49,7 @@ outputs = []
 depends = [
   "compile-rust{{ ' --release' if usage.release else '' }}",
   "copy-library{{ ' --release' if usage.release else '' }}",
-  "generate-header",
+  "generate-header{{ ' --release' if usage.release else '' }}",
 ]
 run = "jextract --output java-client/lib/src/generated/java -t com.bluedragonmc.steelworldgen.steel_provider ./steel-provider/target/header.h"
 
