@@ -1,7 +1,8 @@
 mod c_api;
 
 use std::collections::{hash_map::Entry, VecDeque};
-use std::sync::{Arc, Mutex, Once, RwLock, Weak};
+use std::io::Cursor;
+use std::sync::{Arc, Mutex, Once, RwLock};
 
 use glam::IVec3;
 use rayon::prelude::*;
@@ -10,22 +11,22 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use steel_core::behavior::init_behaviors;
 use steel_core::block_entity::init_block_entities;
-use steel_core::chunk::chunk_access::{ChunkAccess, ChunkStatus};
 use steel_core::chunk::chunk_holder::ChunkHolder;
 use steel_core::chunk::chunk_ticket_manager::ChunkTicketLevel;
-use steel_core::chunk::level_chunk::{LevelChunk, LevelChunkPromotion};
-use steel_core::chunk::proto_chunk::ProtoChunk;
 use steel_core::chunk::section::{ChunkSection, Sections};
+use steel_core::chunk::status::ChunkStatus;
+use steel_core::chunk::Chunk;
 use steel_core::entity::init_entities;
 use steel_core::level_data::WorldGenerationSettings;
 use steel_core::world::{World, WorldConfig, WorldStorageConfig};
-use steel_core::worldgen::WorldGenRegion;
-use steel_core::worldgen::{ChunkGenerator, ChunkGeneratorType, VanillaGenerator};
+use steel_core::worldgen::generator::generation_benchmark_support;
+use steel_core::worldgen::{
+    ChunkGenerator, ChunkGeneratorType, OverworldGenerator, WorldGenRegion,
+};
 use steel_registry::vanilla_dimension_types;
 use steel_registry::{REGISTRY, Registry, RegistryEntry};
-use steel_utils::ChunkPos;
-use steel_utils::Identifier;
 use steel_utils::types::{Difficulty, GameType};
+use steel_utils::{ChunkPos, Identifier};
 use steel_worldgen::biomes::BiomeSourceKind;
 
 const MIN_Y: i32 = -64;
@@ -74,7 +75,7 @@ pub struct WorldgenContext {
     /// Per-position mutexes to synchronize concurrent generation of the same chunk.
     /// Cleaned up periodically to prevent unbounded growth.
     generation_mutexes: Mutex<FxHashMap<(i32, i32), Arc<Mutex<()>>>>,
-    /// Dedicated thread pool used to parallelize the per-call 7x7 chunk
+    /// Dedicated thread pool used to parallelize the per-call neighborhood chunk
     /// generation. Minestom calls [`WorldgenContext::generate_with_structures`]
     /// concurrently on many virtual threads; funnelling the heavy worldgen work
     /// through this single bounded pool keeps CPU usage predictable while still
@@ -98,7 +99,7 @@ impl WorldgenContext {
                 .expect("failed to create rayon thread pool"),
         );
 
-        let generator = Arc::new(ChunkGeneratorType::Overworld(VanillaGenerator::new(
+        let generator = Arc::new(ChunkGeneratorType::Overworld(OverworldGenerator::new(
             None,
             BiomeSourceKind::overworld(seed),
             seed,
@@ -181,96 +182,68 @@ impl WorldgenContext {
     }
 
     /// Run the generation pipeline (biomes → structures → noise → surface → carvers)
-    /// on the given chunk access.
-    fn run_generation_pipeline(
-        &self,
-        chunk_access: &mut ChunkAccess,
-        generator: &Arc<ChunkGeneratorType>,
-    ) {
-        // 1. Biomes
-        generator.create_biomes(chunk_access);
-        if let ChunkAccess::Proto(p) = chunk_access {
-            p.set_status(ChunkStatus::Biomes);
-        }
-
-        // 2. Structure starts (need for structure references in noise)
-        generator.create_structures(chunk_access);
-        if let ChunkAccess::Proto(p) = chunk_access {
-            p.set_status(ChunkStatus::StructureStarts);
-        }
-
-        // 3. Noise (skip beardifier - only needed for structures)
-        generator.fill_from_noise(chunk_access, None);
-        if let ChunkAccess::Proto(p) = chunk_access {
-            p.set_status(ChunkStatus::Noise);
-        }
-
-        // 4. Surface
-        let neighbor_biomes = |q: IVec3| -> u16 {
-            generator.noise_biome(q.x, q.y, q.z).id() as u16
-        };
-        generator.build_surface(chunk_access, &neighbor_biomes);
-        if let ChunkAccess::Proto(p) = chunk_access {
-            p.set_status(ChunkStatus::Surface);
-        }
-
-        // 5. Carvers
-        generator.apply_carvers(chunk_access);
-        if let ChunkAccess::Proto(p) = chunk_access {
-            p.set_status(ChunkStatus::Carvers);
-        }
+    /// in place on the given chunk.
+    ///
+    /// This mirrors the stages a regular SteelMC server runs, but on a bare
+    /// [`Chunk`] that is never promoted past Carvers. Structure *references*
+    /// (needed only to build the noise beardifier) are skipped along with the
+    /// beardifier, matching the non-structure path of the real pipeline.
+    fn run_generation_pipeline(&self, chunk: &Chunk, generator: &Arc<ChunkGeneratorType>) {
+        // 1. Structure starts (need for structure references in noise).
+        generator.create_structures(chunk);
+        // 2. Biomes.
+        generator.create_biomes(chunk);
+        // 3. Noise (beardifier is only required for actual structure blocks).
+        generation_benchmark_support::fill_from_noise(generator.as_ref(), chunk, None);
+        // 4. Surface.
+        let neighbor_biomes = |q: IVec3| generator.noise_biome(q.x, q.y, q.z).id() as u16;
+        generation_benchmark_support::build_surface(generator.as_ref(), chunk, &neighbor_biomes);
+        // 5. Carvers.
+        generation_benchmark_support::apply_carvers(generator.as_ref(), chunk);
     }
 
-    /// Generate a chunk at `(chunk_x, chunk_z)` using vanilla overworld
-    /// generation (biomes → noise → surface → carvers).
+    /// Generate a chunk at `(chunk_x, chunk_z)` using vanilla world generation
+    /// (structure starts → biomes → noise → surface → carvers).
     ///
-    /// The returned [`ProtoChunk`] contains all block states, biomes,
-    /// heightmaps, and structure-start metadata for the full overworld
-    /// column (`y = -64 .. 320`).  Read blocks with
-    /// [`ProtoChunk::get_block_state`].
+    /// The returned [`Chunk`] contains all block states, biomes, and heightmaps
+    /// for the full overworld column (`y = -64 .. 320`). Read blocks with
+    /// [`Chunk::get_block_state`].
     ///
-    /// **Structures:** Structure *starts* (markers + bounding boxes) are
-    /// generated, but actual structure *blocks* (village houses, etc.)
-    /// and feature decoration (trees, ores, etc.) require
-    /// [`generate_with_structures`] which generates the neighboring
+    /// **Structures:** Structure *starts* are generated, but actual structure
+    /// *blocks* (village houses, etc.) and feature decoration require
+    /// [`generate_with_structures`], which first generates the neighboring
     /// chunks needed for feature placement.
-    ///
-    /// **Promotion to [`LevelChunk`]:** Use [`promote`] after generation
-    /// to convert the [`ProtoChunk`] into a full [`LevelChunk`].  This
-    /// finalises heightmaps, block entity state, and scheduled ticks.
     #[must_use]
-    pub fn generate(&self, chunk_x: i32, chunk_z: i32) -> ProtoChunk {
+    pub fn generate(&self, chunk_x: i32, chunk_z: i32) -> Chunk {
         let pos = ChunkPos::new(chunk_x, chunk_z);
+        let chunk = Chunk::new(
+            self.create_empty_sections(),
+            pos,
+            MIN_Y,
+            HEIGHT,
+            Arc::downgrade(&self.world),
+        );
 
-        let sections = self.create_empty_sections();
-        let proto = ProtoChunk::new(sections, pos, MIN_Y, HEIGHT, Weak::new());
-        let mut chunk = ChunkAccess::Proto(proto);
-
-        // Run the shared generation pipeline
-        self.run_generation_pipeline(&mut chunk, &self.generator);
-
-        let ChunkAccess::Proto(proto) = chunk else {
-            unreachable!("chunk is always proto during generation");
-        };
-        proto
+        self.run_generation_pipeline(&chunk, &self.generator);
+        chunk
     }
 
     /// Generate a chunk with full feature decoration including structure
     /// blocks (village houses, etc.), trees, ores, and other features.
     ///
-    /// This uses the world's persistent `ChunkMap` to generate a 3×3 area
+    /// This uses the world's persistent `ChunkMap` to generate a 7×7 area
     /// around the target chunk, ensuring that feature decorations from
     /// neighboring chunks (trees, lava pools, etc.) properly write across
-    /// chunk borders. The `ChunkMap` retains holders between calls, so
-    /// decorations persist across multiple `generate_with_structures` calls.
+    /// chunk borders. The holders are retained between calls, so decorations
+    /// persist across multiple `generate_with_structures` calls.
     ///
-    /// The returned [`ProtoChunk`] can be promoted with [`promote`].
-///
-/// # Panics
-    /// Panics if the Tokio runtime, world, or chunk holders cannot be
-    /// created.
+    /// The returned [`Chunk`] contains the decorated chunk's block states and
+    /// biomes, taken from the live holder.
+    ///
+    /// # Panics
+    /// Panics if the world's chunk holders or generation pool cannot be created.
     #[must_use]
-    pub fn generate_with_structures(&self, chunk_x: i32, chunk_z: i32) -> ProtoChunk {
+    pub fn generate_with_structures(&self, chunk_x: i32, chunk_z: i32) -> Chunk {
         // Evict stale holders/mutexes before taking the shared generation gate.
         // The write guard excludes concurrent generation, so evicting can never
         // remove an entry another in-flight call is still using. We check only
@@ -307,13 +280,12 @@ impl WorldgenContext {
 
         let center = ChunkPos::new(chunk_x, chunk_z);
         // Feature decoration writes within radius 1, and each decoration pass
-        // reads from neighbors within distance 1. We run passes in a 5x5 area
-        // (radius 2) around the target, so we need a 7x7 area (radius 3) of
+        // reads from neighbors within distance 1. We run passes in a 3×3 area
+        // (radius 1) around the target, so we need a 7×7 area (radius 3) of
         // Carvers-status chunks to support all passes' read dependencies.
         const FEATURE_RADIUS: i32 = 3;
 
-        // Get or create holders for the 5x5 neighborhood.
-        // We need holders at Carvers status for feature decoration to write into them.
+        // Get or create holders for the 7×7 neighborhood.
         let mut holders_guard = self.holders.lock().unwrap();
         let mut neighborhood_holders = Vec::new();
         let mut new_holder_positions = Vec::new();
@@ -348,7 +320,6 @@ impl WorldgenContext {
         }
 
         // For each holder in the neighborhood, ensure it's generated up to Carvers status.
-        // We do this by running the generation pipeline on any that haven't reached Carvers yet.
         // Use per-position mutex to prevent concurrent generation of the same chunk.
         // Per-chunk generation inside SteelMC is serial, so generating the 49
         // holders in parallel (each guarded by its position mutex) scales near-
@@ -359,9 +330,6 @@ impl WorldgenContext {
             neighborhood_holders.par_iter().for_each(|(pos, holder)| {
                 // Skip if already at Carvers
                 if holder.try_chunk(ChunkStatus::Carvers).is_some() {
-                    return;
-                }
-                if holder.persisted_status().is_some() {
                     return;
                 }
 
@@ -381,31 +349,22 @@ impl WorldgenContext {
                 if holder.try_chunk(ChunkStatus::Carvers).is_some() {
                     return;
                 }
-                if holder.persisted_status().is_some() {
-                    return;
-                }
 
                 self.generate_chunk_up_to_carvers(pos.0, pos.1, holder.clone(), generator);
             });
         });
 
         // Now all neighborhood holders are at least at Carvers status.
-        // Run feature decoration passes for each chunk in the 3x3 area around the target chunk.
+        // Run feature decoration passes for each chunk in the 3×3 area around the target chunk.
         // Each chunk's decoration pass runs exactly once and writes to itself
         // and its neighbors (radius 1). We track which passes have run to
         // ensure each pass runs only once across all generate_with_structures calls.
         let feature_step = steel_core::chunk::chunk_pyramid::GENERATION_PYRAMID
             .get_step_to(ChunkStatus::Features);
 
-        // Use live holders directly for both reading and writing.
-        // The passes run in a fixed order (dx from -1 to 1, dz from -1 to 1),
-        // and each pass runs exactly once (tracked by passes_run).
-        // Running a 3x3 area of passes ensures the target chunk and its 8 neighbors
-        // receive decorations from their neighbors, since each pass writes to radius 1.
-        // The PASS_RADIUS of 1 covers the 3x3 area where features actually write.
         const PASS_RADIUS: i32 = 1;
 
-        // Build a lookup map for the StaticCache2D once (avoids O(n) linear search per pass).
+        // Build a lookup map for the cache once (avoids O(n) linear search per pass).
         let holders_map: FxHashMap<(i32, i32), Arc<ChunkHolder>> = neighborhood_holders
             .iter()
             .map(|(pos, h)| (*pos, Arc::clone(h)))
@@ -428,9 +387,7 @@ impl WorldgenContext {
         // We use a shared set so passes persist across generate_with_structures calls.
         let mut passes_run = self.decoration_passes_run.lock().unwrap();
 
-        // Run all 9 decoration passes for the 3x3 area around the target chunk.
-        // This ensures the target chunk and its 8 neighbors run their passes,
-        // allowing trees at chunk boundaries to be generated by either chunk's pass.
+        // Run all 9 decoration passes for the 3×3 area around the target chunk.
         // Forward order (dx=-1..=1, dz=-1..=1) ensures neighbor passes run before
         // the target chunk's pass, allowing the target to write into neighbors.
         for dx in -PASS_RADIUS..=PASS_RADIUS {
@@ -440,19 +397,16 @@ impl WorldgenContext {
 
                 // Run this chunk's decoration pass if it hasn't run yet
                 if passes_run.insert(pass_key) {
-                    // Use the pre-built map for O(1) lookup instead of linear search
                     let center_holder = holders_map
                         .get(&(center_pos.0.x, center_pos.0.y))
-                        .map(|h| Arc::clone(h))
+                        .map(Arc::clone)
                         .expect("feature neighborhood holder must exist");
 
                     // Prime final heightmaps for feature placement
-                    {
-                        let center_chunk = center_holder
-                            .try_chunk(ChunkStatus::Carvers)
-                            .expect("feature neighborhood chunk must be at Carvers");
-                        center_chunk.prime_final_heightmaps();
-                    }
+                    let center_chunk = center_holder
+                        .try_chunk(ChunkStatus::Carvers)
+                        .expect("feature neighborhood chunk must be at Carvers");
+                    center_chunk.prime_final_heightmaps();
 
                     let region_random = generator.create_worldgen_region_random(
                         self.seed as i64,
@@ -470,32 +424,26 @@ impl WorldgenContext {
             }
         }
 
-        // Extract the target chunk from the live holder (decorations already applied)
+        // Extract the target chunk from the live holder (decorations already applied).
         let target_holder = holders_map
             .get(&(chunk_x, chunk_z))
-            .map(|h| Arc::clone(h))
+            .map(Arc::clone)
             .expect("target holder must exist");
-
-        let chunk_access = target_holder
+        let chunk = target_holder
             .try_chunk(ChunkStatus::Carvers)
             .expect("chunk must be at least at Carvers status");
-        let ChunkAccess::Proto(proto) = &*chunk_access else {
-            unreachable!("chunk should still be Proto at Carvers status");
-        };
 
         // Finalize the holder's sections before cloning so we copy compact
         // palettes instead of building-mode 8 KB cubes, and so each clone's
-        // recalculate_counts has no 4096-cell scan to redo. Later decoration
-        // passes re-enter building mode, so this mainly benefits repeated
-        // extractions of an already-decorated chunk.
-        for section in &proto.sections.sections {
+        // recalculate_counts has no 4096-cell scan to redo.
+        for section in &chunk.sections.sections {
             let mut guard = section.write();
             guard.states.finalize_building();
             guard.biomes.finalize_building();
         }
 
-        // Clone sections out of the holder
-        let sections: Vec<ChunkSection> = proto
+        // Clone sections out of the holder into a fresh Chunk.
+        let sections: Vec<ChunkSection> = chunk
             .sections
             .sections
             .iter()
@@ -510,27 +458,19 @@ impl WorldgenContext {
             })
             .collect();
 
-        // Carry the holder's final heightmaps into the returned proto. The
-        // holder's heightmaps are primed before decoration and kept up to date
-        // by every decoration write (Carvers-status chunks update final
-        // heightmaps), so LevelChunk::from_proto can skip re-scanning the
-        // sections for them. If they are absent (e.g. the holder was evicted
-        // and regenerated after its pass already ran), from_proto's normal
-        // fallback recomputes them, so this is purely an optimization.
-        let chunk = ProtoChunk::new(
+        let result = Chunk::new(
             Sections::from_owned(sections.into_boxed_slice()),
             center,
             MIN_Y,
             HEIGHT,
-            Weak::new(),
+            Arc::downgrade(&self.world),
         );
-        *chunk.heightmaps.write() = proto.heightmaps.read().clone();
-
-        chunk
+        result.prime_final_heightmaps();
+        result
     }
 
-    /// Generate a single chunk up to Carvers status (noise, surface, carvers).
-    /// This is used to initialize holders in the persistent map.
+    /// Generate a single chunk up to Carvers status (structure → biomes → noise →
+    /// surface → carvers). This is used to initialize holders in the persistent map.
     fn generate_chunk_up_to_carvers(
         &self,
         chunk_x: i32,
@@ -539,70 +479,40 @@ impl WorldgenContext {
         generator: &Arc<ChunkGeneratorType>,
     ) {
         let pos = ChunkPos::new(chunk_x, chunk_z);
+        let chunk = Chunk::new(
+            self.create_empty_sections(),
+            pos,
+            MIN_Y,
+            HEIGHT,
+            Arc::downgrade(&self.world),
+        );
 
-        // Create a fresh proto chunk and run all generation steps on it locally
-        let sections = self.create_empty_sections();
-        let proto = ProtoChunk::new(sections, pos, MIN_Y, HEIGHT, Weak::new());
-        let mut chunk_access = ChunkAccess::Proto(proto);
+        self.run_generation_pipeline(&chunk, generator);
 
-        // Run the shared generation pipeline
-        self.run_generation_pipeline(&mut chunk_access, generator);
-
-        // Insert the fully generated chunk at Carvers status
-        holder.insert_chunk(chunk_access, ChunkStatus::Carvers);
+        // Insert the fully generated chunk at Carvers status.
+        holder.insert_chunk(chunk, ChunkStatus::Carvers);
     }
 }
 
-/// Promote a [`ProtoChunk`] (produced by [`WorldgenContext::generate`]) to a
-/// full [`LevelChunk`].
+/// Serialize a chunk's sections (block states and biomes) into the raw network
+/// section byte stream that a client-side `ChunkData.Section` reader consumes.
+///
+/// Each section is finalized and its counters recounted before writing, so this
+/// works whether the chunk came from [`WorldgenContext::generate`] or
+/// [`WorldgenContext::generate_with_structures`].
 #[must_use]
-pub fn promote(proto: ProtoChunk) -> LevelChunkPromotion {
-    LevelChunk::from_proto(proto, MIN_Y, HEIGHT, Weak::new())
-}
-
-/// Encode a chunk and its light data into raw packet bytes suitable for
-/// sending to a Minecraft client.
-///
-/// The chunk is promoted via [`promote`] first, then serialized into the
-/// `CLevelChunkWithLight` packet format.  Light data will be empty (all
-/// sections unlit) since the standalone generator does not run the light
-/// stage — the client will display the chunk at full darkness.
-///
-/// `compression` controls whether the packet is compressed (`Some(...)`)
-/// or sent uncompressed (`None`).
-///
-/// # Panics
-/// Panics if packet encoding fails (should never happen for a single chunk).
-#[must_use]
-pub fn encode_chunk_packet(
-    chunk: ProtoChunk,
-    dimension_has_skylight: bool,
-    compression: Option<steel_protocol::packet_traits::CompressionInfo>,
-) -> Vec<u8> {
-    use steel_protocol::packet_traits::EncodedPacket;
-    use steel_protocol::packets::game::CLevelChunkWithLight;
-    use steel_protocol::utils::ConnectionProtocol;
-
-    let promoted = promote(chunk);
-    let chunk = promoted.chunk;
-    let pos = chunk.pos;
-
-    let packet = CLevelChunkWithLight {
-        x: pos.0.x,
-        z: pos.0.y,
-        chunk_data: chunk.extract_chunk_data(),
-        light_data: chunk.extract_light_data(dimension_has_skylight),
-    };
-
-    let encoded = EncodedPacket::from_bare(packet, compression, ConnectionProtocol::Play)
-        .expect("failed to encode chunk packet");
-    encoded.encoded_data.to_vec()
+pub fn serialize_chunk_sections(chunk: &Chunk) -> Vec<u8> {
+    let mut cursor = Cursor::new(Vec::new());
+    for section in &chunk.sections().sections {
+        section.write().recalculate_counts();
+        section.read().write(&mut cursor);
+    }
+    cursor.into_inner()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use steel_core::chunk::heightmap::{HeightmapType, ProtoHeightmaps};
     use steel_registry::vanilla_blocks;
     use steel_utils::BlockPos;
 
@@ -684,60 +594,16 @@ mod tests {
     }
 
     #[test]
-    fn extract_light_data_is_empty_when_light_uncomputed() {
-        initialize();
-
-        let ctx = WorldgenContext::new(42);
-        let chunk = ctx.generate_with_structures(0, 0);
-        let promoted = promote(chunk);
-
-        // Light is never computed by the generation pipeline (it stops at
-        // Carvers), so the chunk's light sections are all "missing" and
-        // extract_light_data must produce all-zero masks and no updates.
-        let light = promoted.chunk.extract_light_data(true);
-        for mask in [
-            &light.sky_y_mask,
-            &light.block_y_mask,
-            &light.empty_sky_y_mask,
-            &light.empty_block_y_mask,
-        ] {
-            assert!(
-                mask.0.iter().all(|word| *word == 0),
-                "light mask must have no bits set, got {mask:?}"
-            );
-        }
-        assert!(light.sky_updates.is_empty());
-        assert!(light.block_updates.is_empty());
-    }
-
-    #[test]
-    fn carried_heightmaps_match_fresh_recompute() {
+    fn serialized_sections_are_not_empty() {
         initialize();
 
         let ctx = WorldgenContext::new(42);
         let chunk = ctx.generate_with_structures(0, 0);
 
-        // The extracted chunk carries the holder's incrementally-maintained
-        // final heightmaps. They must match a fresh scan of the extracted
-        // sections; if they diverge, the carried data is stale and rendering
-        // would be wrong.
-        let carried = chunk.heightmaps.read().clone();
-        let mut fresh = ProtoHeightmaps::new();
-        fresh.prime_from_sections(
-            HeightmapType::final_types(),
-            MIN_Y,
-            HEIGHT,
-            &chunk.sections.sections,
+        let bytes = serialize_chunk_sections(&chunk);
+        assert!(
+            !bytes.is_empty(),
+            "serialized chunk sections must produce some data"
         );
-
-        for hm_type in HeightmapType::final_types() {
-            let a = carried.get(*hm_type).map(|h| *h.raw_data());
-            let b = fresh.get(*hm_type).map(|h| *h.raw_data());
-            assert_eq!(
-                a,
-                b,
-                "carried {hm_type:?} heightmap diverges from a fresh recompute"
-            );
-        }
     }
 }

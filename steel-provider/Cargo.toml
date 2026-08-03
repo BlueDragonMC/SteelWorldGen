@@ -5,11 +5,11 @@ edition = "2024"
 
 [dependencies]
 rayon = "1.12.0"
-steel-core = { git = "https://github.com/Steel-Foundation/SteelMC", version = "0.15.2" }
-steel-worldgen = { git = "https://github.com/Steel-Foundation/SteelMC", version = "0.15.2" }
-steel-registry = { git = "https://github.com/Steel-Foundation/SteelMC", version = "0.15.2" }
-steel-utils = { git = "https://github.com/Steel-Foundation/SteelMC", version = "0.15.2" }
-steel-protocol = { git = "https://github.com/Steel-Foundation/SteelMC", version = "0.15.2" }
+steel-core = { git = "https://github.com/Steel-Foundation/SteelMC", rev = "3484da9b5dd08455ef4f13ba4e63c5e79129bc57", features = ["benchmark-support"] }
+steel-worldgen = { git = "https://github.com/Steel-Foundation/SteelMC", rev = "3484da9b5dd08455ef4f13ba4e63c5e79129bc57" }
+steel-registry = { git = "https://github.com/Steel-Foundation/SteelMC", rev = "3484da9b5dd08455ef4f13ba4e63c5e79129bc57" }
+steel-utils = { git = "https://github.com/Steel-Foundation/SteelMC", rev = "3484da9b5dd08455ef4f13ba4e63c5e79129bc57" }
+steel-protocol = { git = "https://github.com/Steel-Foundation/SteelMC", rev = "3484da9b5dd08455ef4f13ba4e63c5e79129bc57" }
 tokio = "1.53.1"
 toml = "1.1.4"
 rustc-hash = "2.1.3"

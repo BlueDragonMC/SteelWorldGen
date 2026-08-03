@@ -1,8 +1,8 @@
 use std::mem;
 
 use crate::WorldgenContext;
-use crate::encode_chunk_packet;
 use crate::initialize;
+use crate::serialize_chunk_sections;
 
 use std::panic::catch_unwind;
 
@@ -40,7 +40,7 @@ pub extern "C" fn steel_provider_generate(
     let provider = unsafe { opaque_pointer::mut_object(provider) };
 
     let chunk = provider.unwrap().generate_with_structures(chunk_x, chunk_z);
-    let mut vec = encode_chunk_packet(chunk, true, None);
+    let mut vec = serialize_chunk_sections(&chunk);
 
     let buffer = ByteBuffer {
         ptr: vec.as_mut_ptr(),

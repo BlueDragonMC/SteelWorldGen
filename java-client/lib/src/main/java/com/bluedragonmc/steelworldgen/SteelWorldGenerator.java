@@ -8,7 +8,6 @@ import net.minestom.server.instance.generator.GenerationUnit;
 import net.minestom.server.instance.generator.Generator;
 import net.minestom.server.instance.generator.GeneratorImpl;
 import net.minestom.server.network.NetworkBuffer;
-import net.minestom.server.network.packet.server.play.ChunkDataPacket;
 import net.minestom.server.network.packet.server.play.data.ChunkData;
 import net.minestom.server.registry.DynamicRegistry;
 import net.minestom.server.registry.RegistryKey;
@@ -86,7 +85,7 @@ class SteelWorldGenerator implements Generator, AutoCloseable {
         this.cleanable.clean();
     }
 
-    private ChunkDataPacket generateChunk(int chunkX, int chunkZ) {
+    private byte[] generateChunkSections(int chunkX, int chunkZ) {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment raw = steel_provider_generate(arena, worldgenContext, chunkX, chunkZ);
             try {
@@ -95,11 +94,9 @@ class SteelWorldGenerator implements Generator, AutoCloseable {
 
                 int len = Math.toIntExact(lenLong);
                 MemorySegment data = ptr.reinterpret(len, arena, null);
-
-                NetworkBuffer nb = NetworkBuffer.wrap(data, 0, len, MinecraftServer.getRegistries());
-                nb.read(NetworkBuffer.VAR_INT); // Frame length
-                nb.read(NetworkBuffer.VAR_INT); // Packet id
-                return ChunkDataPacket.SERIALIZER.read(nb);
+                byte[] bytes = new byte[len];
+                data.asByteBuffer().get(bytes);
+                return bytes;
             } finally {
                 steel_provider_bytebuf_free(raw);
             }
@@ -111,9 +108,9 @@ class SteelWorldGenerator implements Generator, AutoCloseable {
         if (unit.absoluteStart().chunkX() + 1 != unit.absoluteEnd().chunkX() || unit.absoluteStart().chunkZ() + 1 != unit.absoluteEnd().chunkZ()) {
             throw new IllegalArgumentException("Expected generation unit to be a single chunk");
         }
-        ChunkDataPacket p = generateChunk(unit.absoluteStart().chunkX(), unit.absoluteStart().chunkZ());
 
-        ChunkData cd = p.chunkData();
+        byte[] data = generateChunkSections(unit.absoluteStart().chunkX(), unit.absoluteStart().chunkZ());
+        NetworkBuffer sectionsBuffer = NetworkBuffer.wrap(data, 0, data.length, MinecraftServer.getRegistries());
 
         Point start = unit.absoluteStart();
         final int blockX = start.blockX();
@@ -125,10 +122,9 @@ class SteelWorldGenerator implements Generator, AutoCloseable {
             chunkSections = chunkModifier.sections();
         }
 
-        NetworkBuffer data = NetworkBuffer.wrap(cd.data(), 0, cd.data().length, MinecraftServer.getRegistries());
         int sectionIndex = 0;
-        while (data.readableBytes() > 0) {
-            ChunkData.Section section = data.read(SECTION_SERIALIZER);
+        while (sectionsBuffer.readableBytes() > 0) {
+            ChunkData.Section section = sectionsBuffer.read(SECTION_SERIALIZER);
 
             if (chunkSections != null && sectionIndex < chunkSections.size()
                     && chunkSections.get(sectionIndex).modifier() instanceof GeneratorImpl.SectionModifierImpl sm) {
