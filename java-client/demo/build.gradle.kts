@@ -9,7 +9,7 @@ repositories {
 
 dependencies {
     implementation(libs.minestom)
-    implementation(project(":lib"))
+    implementation(project(":minestom"))
 }
 
 testing {

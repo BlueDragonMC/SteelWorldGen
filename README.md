@@ -10,13 +10,13 @@ Uses [SteelMC](https://github.com/Steel-Foundation/SteelMC/) as a library to imp
 
 `steel-provider/src/lib.rs` contains some functions that interact with SteelMC to bring chunks through the full generation process outside of a normal server environment. Those functions are compiled into a standalone executable (`steel-provider/src/main.rs`), which acts as a "dumb" server that exclusively handles chunk generation.
 
-The Java library sets up Minestom to request chunks over the socket: each `Generator#generate()` call sends a small packet with the seed and chunk coordinates and then reads the generated chunk's sections in Minecraft's own network serialization format from the response.
+The Java side is split into two modules in `java-client`: the `bridge` module is a standalone client library that connects to the steel-provider server, and the `minestom` module adapts it into a Minestom world generator. Each `Generator#generate()` call sends a small packet with the seed and chunk coordinates and then reads a response containing the generated chunk's sections in Minecraft's own network format.
 
 The server can be used standalone. Currently, only a Java client exists, but other clients could easily be made as long as they understand how to decode the data structures in Minecraft's chunk data packet. For more details on the protocol, see [steel-provider/PROTOCOL.md](steel-provider/PROTOCOL.md).
 
 ## Installation
 
-![Latest version](https://img.shields.io/badge/dynamic/xml?url=https%3A%2F%2Freposilite.bluedragonmc.com%2Freleases%2Fcom%2Fbluedragonmc%2Fsteelworldgen%2Fmaven-metadata.xml&query=%2Fmetadata%2Fversioning%2Flatest&label=Latest%20Version)
+![Latest version](https://img.shields.io/badge/dynamic/xml?url=https%3A%2F%2Freposilite.bluedragonmc.com%2Freleases%2Fcom%2Fbluedragonmc%2Fsteelworldgen-minestom%2Fmaven-metadata.xml&query=%2Fmetadata%2Fversioning%2Flatest&label=Latest%20Version)
 
 ```kotlin
 repositories {
@@ -24,9 +24,11 @@ repositories {
 }
 
 dependencies {
-   implementation("com.bluedragonmc:steelworldgen:$VERSION")
+   implementation("com.bluedragonmc:steelworldgen-minestom:$VERSION")
 }
 ```
+
+If you only need to talk to a steel-provider server without Minestom, depend on `com.bluedragonmc:steelworldgen-bridge` instead.
 
 ## Usage
 
@@ -55,7 +57,7 @@ Chunk generation gets MUCH faster at the expense of a longer compilation time.
 
    By default the Rust binary is built natively with `cargo build`. To instead cross-compile a fully static binary using [`cargo-zigbuild`](https://github.com/rust-cross/cargo-zigbuild), pass `--static` (`mise run build --release --static`).
 
-   The Java library will be built to `java-client/lib/build/libs/lib.jar`. If you want to publish it to a Maven repository, modify the hostname in [java-client/lib/build.gradle.kts](java-client/lib/build.gradle.kts) and run `mise run publish` (or `mise run publishToMavenLocal` to run `gradle publishToMavenLocal`).
+   The Java library will be built to `java-client/minestom/build/libs/minestom-dev.jar`. If you want to publish it to a Maven repository, modify the hostname in [java-client/minestom/build.gradle.kts](java-client/minestom/build.gradle.kts) and run `mise run publish` (or `mise run publishToMavenLocal` to run `gradle publishToMavenLocal`).
 
 ### AI Disclosure
 

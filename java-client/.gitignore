@@ -7,8 +7,8 @@ build
 # Ignore Kotlin plugin data
 .kotlin
 
-lib/src/main/resources/native/steel-provider
+bridge/src/main/resources/native/steel-provider
 
 # This file is copied when running `mise run copy-binary` and is included in the final JAR,
 # but there's no reason to keep it in the repository since it's just copied from `steel-provider/LICENSE-AGPL`
-lib/src/main/resources/META-INF/LICENSE-AGPL.txt
+bridge/src/main/resources/META-INF/LICENSE-AGPL.txt

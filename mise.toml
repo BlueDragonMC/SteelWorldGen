@@ -33,17 +33,17 @@ flag "-s --static" default=#false help="Copy the statically linked musl executab
 outputs = []
 depends = ["compile-rust{{ ' --release' if usage.release else '' }}{{ ' --static' if usage.static else '' }}"]
 run = """
-mkdir -p java-client/lib/src/main/resources/native
-mkdir -p java-client/lib/src/main/resources/META-INF
+mkdir -p java-client/bridge/src/main/resources/native
+mkdir -p java-client/bridge/src/main/resources/META-INF
 PROFILE="{{ 'release' if usage.release else 'debug' }}"
 TARGET_DIR="{{ 'target/x86_64-unknown-linux-musl' if usage.static else 'target' }}"
-cp -fv "steel-provider/${TARGET_DIR}/${PROFILE}/steel-provider" java-client/lib/src/main/resources/native/steel-provider
-cp -fv "steel-provider/LICENSE-AGPL" java-client/lib/src/main/resources/META-INF/LICENSE-AGPL.txt
-chmod +x java-client/lib/src/main/resources/native/steel-provider
+cp -fv "steel-provider/${TARGET_DIR}/${PROFILE}/steel-provider" java-client/bridge/src/main/resources/native/steel-provider
+cp -fv "steel-provider/LICENSE-AGPL" java-client/bridge/src/main/resources/META-INF/LICENSE-AGPL.txt
+chmod +x java-client/bridge/src/main/resources/native/steel-provider
 """
 
 [tasks.build]
-#sources = ["java-client/lib/**/*", "java-client/gradlew", "java-client/gradlew.bat", "java-client/gradle.properties", "java-client/settings.gradle.kts", "java-client/gradle/**/*"]
+#sources = ["java-client/bridge/**/*", "java-client/minestom/**/*", "java-client/demo/**/*", "java-client/gradlew", "java-client/gradlew.bat", "java-client/gradle.properties", "java-client/settings.gradle.kts", "java-client/gradle/**/*"]
 usage = '''
 flag "-r --release" default=#false help="Build with the Rust binary compiled in release mode"
 flag "-s --static" default=#false help="Bundle the statically linked musl binary"
