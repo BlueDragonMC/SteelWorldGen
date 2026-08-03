@@ -5,19 +5,31 @@ import net.minestom.server.instance.generator.Generator;
 public class SteelWorldGenProvider {
 
     private static final Object lock = new Object();
-    private static boolean libraryLoaded = false;
+    private static SteelWorldGenServer server;
 
-    public static void loadNativeLibrary() {
+    public static void startServer() {
         synchronized (lock) {
-            if (!libraryLoaded) {
-                NativeLoader.loadLibraryFromJar("/native/libsteel_provider.so", "libsteel_provider.so");
-                libraryLoaded = true;
+            if (server == null) {
+                try {
+                    server = new SteelWorldGenServer();
+                } catch (Exception e) {
+                    throw new RuntimeException("Failed to start steel-provider server", e);
+                }
             }
         }
     }
 
     public static Generator getGenerator(long seed) {
-        loadNativeLibrary();
-        return new SteelWorldGenerator(seed);
+        startServer();
+        return new SteelWorldGenerator(seed, server);
+    }
+
+    public static void closeServer() {
+        synchronized (lock) {
+            if (server != null) {
+                server.close();
+                server = null;
+            }
+        }
     }
 }

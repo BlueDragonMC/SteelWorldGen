@@ -8,16 +8,11 @@ Uses [SteelMC](https://github.com/Steel-Foundation/SteelMC/) as a library to imp
 
 ## How it works
 
-`steel-provider/src/lib.rs` contains some functions that interact with SteelMC to bring chunks through the full generation process outside of a normal server environment.
-Those functions are made available to Java via `steel-provider/src/c_api.rs`, which acts as a bridge that uses the C ABI.
+`steel-provider/src/lib.rs` contains some functions that interact with SteelMC to bring chunks through the full generation process outside of a normal server environment. Those functions are compiled into a standalone executable (`steel-provider/src/main.rs`), which acts as a "dumb" server that exclusively handles chunk generation.
 
-A C header file is generated from `c_api.rs` using [`cbindgen`](https://github.com/mozilla/cbindgen).
+The Java library sets up Minestom to request chunks over the socket: each `Generator#generate()` call sends a small packet with the seed and chunk coordinates and then reads the generated chunk's sections in Minecraft's own network serialization format from the response.
 
-Then, that header file is used to generate Java bindings with [`jextract`](https://github.com/openjdk/jextract).
-
-Using those bindings, we can call the Rust functions from Java using the [Foreign Function and Memory API](https://docs.oracle.com/en/java/javase/21/core/foreign-function-and-memory-api.html).
-
-`SteelWorldGenProvider` extracts a C shared library from inside the library JAR the first time a world generator is created.
+The server can be used standalone. Currently, only a Java client exists, but other clients could easily be made as long as they understand how to decode the data structures in Minecraft's chunk data packet. For more details on the protocol, see [steel-provider/PROTOCOL.md](steel-provider/PROTOCOL.md).
 
 ## Installation
 
@@ -44,6 +39,8 @@ instance.setChunkSupplier(LightingChunk::new);
 ```
 
 For a full example, see the `java-client/demo` directory. You can run the demo locally with `mise run demo`.
+You'll probably want to use the `--release` flag (`mise run demo --release`).
+Chunk generation gets MUCH faster at the expense of a longer compilation time.
 
 ## Building from Source
 
@@ -56,10 +53,10 @@ For a full example, see the `java-client/demo` directory. You can run the demo l
 
    For a release (optimized) build, use `mise run build --release`.
 
-   Dependencies are already configured to build in release mode even without that flag, so you probably won't notice a significant performance difference. This is necessary because in debug mode, SteelMC generates a function that is so large that it overflows Java's default 1MB stack size. Compiling with optimizations makes the function small enough that we don't need to customize Java's stack size with the `-Xss` option.
+   By default the Rust binary is built natively with `cargo build`. To instead cross-compile a fully static binary using [`cargo-zigbuild`](https://github.com/rust-cross/cargo-zigbuild), pass `--static` (`mise run build --release --static`).
 
-   The Java library will be built to `java-client/lib/build/libs/lib.jar`.
+   The Java library will be built to `java-client/lib/build/libs/lib.jar`. If you want to publish it to a Maven repository, modify the hostname in [java-client/lib/build.gradle.kts](java-client/lib/build.gradle.kts) and run `mise run publish` (or `mise run publishToMavenLocal` to run `gradle publishToMavenLocal`).
 
 ### AI Disclosure
 
-`steel-provider/src/lib.rs` (the part of the project that interacts directly with SteelMC) was written with a lot of AI assistance.
+The Rust portion of this project was written with a lot of AI assistance.

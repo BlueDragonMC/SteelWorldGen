@@ -15,11 +15,3 @@ toml = "1.1.4"
 rustc-hash = "2.1.3"
 glam = "0.33.2"
 opaque-pointer = "0.10.1"
-
-[lib]
-crate-type = ["cdylib"]
-
-[profile.dev.package."*"]
-# At least the `steel-registry` crate needs to be compiled with `-O3`. If not, it'll have a function that's so large that invoking it overflows the stack. (Java's default stack size for non-main threads is 1MB, and the function is about 1.9MB)
-# The other crates can be compiled in debug mode if desired.
-opt-level = 3

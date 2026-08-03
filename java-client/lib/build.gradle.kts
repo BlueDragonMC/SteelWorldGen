@@ -39,14 +39,6 @@ java {
     }
 }
 
-sourceSets {
-    main {
-        java {
-            srcDir("src/generated/java")
-        }
-    }
-}
-
 val sourcesJar by tasks.registering(Jar::class) {
     archiveClassifier.set("sources")
     from(sourceSets.main.get().allSource)

@@ -1,0 +1,17 @@
+SteelWorldGen
+
+The native executable bundled in this archive at native/steel-provider was
+compiled from AGPL-3.0-licensed software: the steel-provider Rust crate in
+this project and the SteelMC library it links against.
+
+That executable is therefore licensed under the GNU Affero General Public
+License, Version 3, and all source code it was compiled from is available
+from https://github.com/BlueDragonMC/SteelWorldGen (steel-provider/) and
+https://github.com/Steel-Foundation/SteelMC.
+
+The full license text is included in this archive at
+META-INF/LICENSE-AGPL.txt and is also available at
+https://www.gnu.org/licenses/agpl-3.0.txt.
+
+Everything else in this archive (the Java library) is licensed under the
+Apache License, Version 2.0.

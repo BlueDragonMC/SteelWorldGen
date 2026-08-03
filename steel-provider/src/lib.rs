@@ -1,21 +1,19 @@
-mod c_api;
-
-use std::collections::{hash_map::Entry, VecDeque};
+use std::collections::{VecDeque, hash_map::Entry};
 use std::io::Cursor;
 use std::sync::{Arc, Mutex, Once, RwLock};
 
 use glam::IVec3;
-use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
+use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use steel_core::behavior::init_behaviors;
 use steel_core::block_entity::init_block_entities;
+use steel_core::chunk::Chunk;
 use steel_core::chunk::chunk_holder::ChunkHolder;
 use steel_core::chunk::chunk_ticket_manager::ChunkTicketLevel;
 use steel_core::chunk::section::{ChunkSection, Sections};
 use steel_core::chunk::status::ChunkStatus;
-use steel_core::chunk::Chunk;
 use steel_core::entity::init_entities;
 use steel_core::level_data::WorldGenerationSettings;
 use steel_core::world::{World, WorldConfig, WorldStorageConfig};
@@ -316,7 +314,10 @@ impl WorldgenContext {
         // Record insertion order after releasing the holders lock so eviction's
         // holders→order lock ordering is never reversed.
         if !new_holder_positions.is_empty() {
-            self.holder_order.lock().unwrap().extend(new_holder_positions);
+            self.holder_order
+                .lock()
+                .unwrap()
+                .extend(new_holder_positions);
         }
 
         // For each holder in the neighborhood, ensure it's generated up to Carvers status.
@@ -359,8 +360,8 @@ impl WorldgenContext {
         // Each chunk's decoration pass runs exactly once and writes to itself
         // and its neighbors (radius 1). We track which passes have run to
         // ensure each pass runs only once across all generate_with_structures calls.
-        let feature_step = steel_core::chunk::chunk_pyramid::GENERATION_PYRAMID
-            .get_step_to(ChunkStatus::Features);
+        let feature_step =
+            steel_core::chunk::chunk_pyramid::GENERATION_PYRAMID.get_step_to(ChunkStatus::Features);
 
         const PASS_RADIUS: i32 = 1;
 
@@ -370,18 +371,20 @@ impl WorldgenContext {
             .map(|(pos, h)| (*pos, Arc::clone(h)))
             .collect::<FxHashMap<_, _>>();
 
-        let cache = Arc::new(steel_core::chunk::chunk_generation_task::StaticCache2D::create(
-            chunk_x,
-            chunk_z,
-            FEATURE_RADIUS,
-            {
-                let holders_map = holders_map.clone();
-                move |x, z| match holders_map.get(&(x, z)) {
-                    Some(holder) => Arc::clone(holder),
-                    None => panic!("Missing feature dependency chunk ({x}, {z})"),
-                }
-            },
-        ));
+        let cache = Arc::new(
+            steel_core::chunk::chunk_generation_task::StaticCache2D::create(
+                chunk_x,
+                chunk_z,
+                FEATURE_RADIUS,
+                {
+                    let holders_map = holders_map.clone();
+                    move |x, z| match holders_map.get(&(x, z)) {
+                        Some(holder) => Arc::clone(holder),
+                        None => panic!("Missing feature dependency chunk ({x}, {z})"),
+                    }
+                },
+            ),
+        );
 
         // Track which chunks' decoration passes have been run.
         // We use a shared set so passes persist across generate_with_structures calls.
@@ -408,10 +411,8 @@ impl WorldgenContext {
                         .expect("feature neighborhood chunk must be at Carvers");
                     center_chunk.prime_final_heightmaps();
 
-                    let region_random = generator.create_worldgen_region_random(
-                        self.seed as i64,
-                        center_pos,
-                    );
+                    let region_random =
+                        generator.create_worldgen_region_random(self.seed as i64, center_pos);
                     let mut region = WorldGenRegion::new(
                         &self.world.chunk_map.world_gen_context,
                         feature_step,

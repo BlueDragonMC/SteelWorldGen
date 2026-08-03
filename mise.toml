@@ -2,61 +2,53 @@
 lockfile = true
 
 [tools]
-"cargo:cbindgen" = "latest"
+"cargo:cargo-zigbuild" = "0.23.0"
 gradle = "9.6"
 java = "25"
 rust = "nightly-2026-07-23"
-
-[tools."http:jextract"]
-version = "25-jextract+2-4"
-
-[tools."http:jextract".platforms]
-linux-arm64 = { url = "https://download.java.net/java/early_access/jextract/25/2/openjdk-25-jextract+2-4_linux-aarch64_bin.tar.gz", checksum = "sha256:0e25e6f6efa042f8758eaec65a873887fd2247fcf2e3e22dcfd7e4179fc8b0ae" }
-linux-x64 = { url = "https://download.java.net/java/early_access/jextract/25/2/openjdk-25-jextract+2-4_linux-x64_bin.tar.gz", checksum = "sha256:d0cc481abc1adb16fb9514e1c5e0bfc08d38c29228bece667fb5054ceaffaa42" }
-macos-arm64 = { url = "https://download.java.net/java/early_access/jextract/25/2/openjdk-25-jextract+2-4_macos-aarch64_bin.tar.gz", checksum = "sha256:3dd1dd1bde059d271739e2cc2290c64f93f85488c86c01e566c0e374eece798f" }
-macos-x64 = { url = "https://download.java.net/java/early_access/jextract/25/2/openjdk-25-jextract+2-4_macos-x64_bin.tar.gz", checksum = "sha256:6ae7a46e7e7b56f077ab72623c0a894a8d525d5b698c90785b97c241f95a99b1" }
-windows-x64 = { url = "https://download.java.net/java/early_access/jextract/25/2/openjdk-25-jextract+2-4_windows-x64_bin.tar.gz", checksum = "sha256:b03533eb6b249a154752b7c7bf93cdb8c147cf2f9699422e615e84b7fb652872" }
+zig = "0.16.0"
 
 [tasks.compile-rust]
-#sources = ["steel-provider/src/**", "steel-provider/src/c_api.rs", "steel-provider/Cargo.lock", "steel-provider/Cargo.toml"]
-usage = 'flag "-r --release" default=#false help="Compile the Rust crate in release mode"'
+#sources = ["steel-provider/src/**", "steel-provider/Cargo.lock", "steel-provider/Cargo.toml"]
+usage = '''
+flag "-r --release" default=#false help="Compile the Rust crate in release mode"
+flag "-s --static" default=#false help="Cross-compile a statically linked x86_64-unknown-linux-musl binary"
+'''
 outputs = []
 dir = "steel-provider"
-run = "cargo build{{ ' --release' if usage.release else '' }}"
-
-[tasks.copy-library]
-usage = 'flag "-r --release" default=#false help="Copy the release shared library to the Java resources"'
-outputs = []
-depends = ["compile-rust{{ ' --release' if usage.release else '' }}"]
 run = """
-mkdir -p java-client/lib/src/main/resources/native
-PROFILE="{{ 'release' if usage.release else 'debug' }}"
-cp -fv "steel-provider/target/${PROFILE}/libsteel_provider.so" java-client/lib/src/main/resources/native/libsteel_provider.so
+{% if usage.static %}
+rustup target add x86_64-unknown-linux-musl
+cargo zigbuild{{ ' --release' if usage.release else '' }} --target x86_64-unknown-linux-musl
+{% else %}
+cargo build{{ ' --release' if usage.release else '' }}
+{% endif %}
 """
 
-[tasks.generate-header]
-depends = ["compile-rust{{ ' --release' if usage.release else '' }}"]
-usage = 'flag "-r --release" default=#false help="Generate Java bindings for a release build"'
-#sources = ["steel-provider/src/**", "steel-provider/Cargo.lock", "steel-provider/Cargo.toml"]
+[tasks.copy-binary]
+usage = '''
+flag "-r --release" default=#false help="Copy the release steel-provider executable to the Java resources"
+flag "-s --static" default=#false help="Copy the statically linked musl executable"
+'''
 outputs = []
-dir = "steel-provider"
-run = "cbindgen --crate steel-provider --output target/header.h"
-
-[tasks.generate-java]
-#sources = ["./steel-provider/target/debug/libsteel_provider.so", "./steel-provider/target/header.h"]
-usage = 'flag "-r --release" default=#false help="Generate Java bindings for a release build"'
-outputs = []
-depends = [
-  "compile-rust{{ ' --release' if usage.release else '' }}",
-  "copy-library{{ ' --release' if usage.release else '' }}",
-  "generate-header{{ ' --release' if usage.release else '' }}",
-]
-run = "jextract --output java-client/lib/src/generated/java -t com.bluedragonmc.steelworldgen.steel_provider ./steel-provider/target/header.h"
+depends = ["compile-rust{{ ' --release' if usage.release else '' }}{{ ' --static' if usage.static else '' }}"]
+run = """
+mkdir -p java-client/lib/src/main/resources/native
+mkdir -p java-client/lib/src/main/resources/META-INF
+PROFILE="{{ 'release' if usage.release else 'debug' }}"
+TARGET_DIR="{{ 'target/x86_64-unknown-linux-musl' if usage.static else 'target' }}"
+cp -fv "steel-provider/${TARGET_DIR}/${PROFILE}/steel-provider" java-client/lib/src/main/resources/native/steel-provider
+cp -fv "steel-provider/LICENSE-AGPL" java-client/lib/src/main/resources/META-INF/LICENSE-AGPL.txt
+chmod +x java-client/lib/src/main/resources/native/steel-provider
+"""
 
 [tasks.build]
 #sources = ["java-client/lib/**/*", "java-client/gradlew", "java-client/gradlew.bat", "java-client/gradle.properties", "java-client/settings.gradle.kts", "java-client/gradle/**/*"]
-usage = 'flag "-r --release" default=#false help="Build with the Rust library compiled in release mode"'
-depends = ["generate-java{{ ' --release' if usage.release else '' }}"]
+usage = '''
+flag "-r --release" default=#false help="Build with the Rust binary compiled in release mode"
+flag "-s --static" default=#false help="Bundle the statically linked musl binary"
+'''
+depends = ["copy-binary{{ ' --release' if usage.release else '' }}{{ ' --static' if usage.static else '' }}"]
 dir = "java-client"
 run = "gradle build -x test"
 
@@ -66,47 +58,62 @@ run = "cargo clean"
 
 [tasks.clean-java]
 dir = "java-client"
-run = "gradle clean && rm -rf .gradle build lib/src/generated"
+run = "gradle clean && rm -rf .gradle build"
 
 [tasks.clean]
 depends = ["clean-rust", "clean-java"]
 
 [tasks.build-demo]
-depends = ["generate-java"]
+usage = '''
+flag "-s --static" default=#false help="Bundle the statically linked musl binary"
+'''
+depends = ["copy-binary{{ ' --static' if usage.static else '' }}"]
 dir = "java-client"
 run = "gradle :demo:build"
 
 [tasks.demo]
-usage = 'flag "-r --release" default=#false help="Run the demo against the release binary"'
-depends = ["generate-java{{ ' --release' if usage.release else '' }}"]
+usage = '''
+flag "-r --release" default=#false help="Run the demo against the release binary"
+flag "-s --static" default=#false help="Use the statically linked musl binary"
+'''
+depends = ["copy-binary{{ ' --release' if usage.release else '' }}{{ ' --static' if usage.static else '' }}"]
 dir = "java-client"
 run = "gradle :demo:run"
 
 [tasks.test-rust]
-usage = 'flag "-r --release" default=#false help="Run the Rust tests in release mode"'
+usage = '''
+flag "-r --release" default=#false help="Run the Rust tests in release mode"
+flag "-s --static" default=#false help="Also cross-compile the statically linked musl binary (tests still run natively)"
+'''
 outputs = []
-depends = ["compile-rust{{ ' --release' if usage.release else '' }}"]
+depends = ["compile-rust{{ ' --release' if usage.release else '' }}{{ ' --static' if usage.static else '' }}"]
 dir = "steel-provider"
 run = "cargo test{{ ' --release' if usage.release else '' }}"
 
 [tasks.test-java]
-usage = 'flag "-r --release" default=#false help="Run the Java tests against the release binary"'
+usage = '''
+flag "-r --release" default=#false help="Run the Java tests against the release binary"
+flag "-s --static" default=#false help="Test against the statically linked musl binary"
+'''
 outputs = []
-depends = ["generate-java{{ ' --release' if usage.release else '' }}"]
+depends = ["copy-binary{{ ' --release' if usage.release else '' }}{{ ' --static' if usage.static else '' }}"]
 dir = "java-client"
 run = "gradle test"
 
 [tasks.test]
-usage = 'flag "-r --release" default=#false help="Run all tests in release mode"'
-depends = ["test-rust{{ ' --release' if usage.release else '' }}"]
-depends_post = ["test-java{{ ' --release' if usage.release else '' }}"]
+usage = '''
+flag "-r --release" default=#false help="Run all tests in release mode"
+flag "-s --static" default=#false help="Build/test against the statically linked musl binary"
+'''
+depends = ["test-rust{{ ' --release' if usage.release else '' }}{{ ' --static' if usage.static else '' }}"]
+depends_post = ["test-java{{ ' --release' if usage.release else '' }}{{ ' --static' if usage.static else '' }}"]
 
 [tasks.publish]
 dir = "java-client"
-depends = ["build --release"]
+depends = ["build --release --static"]
 run = "gradle publish -PreposiliteUsername=\"$REPOSILITE_USERNAME\" -PreposilitePassword=\"$REPOSILITE_TOKEN\""
 
 [tasks.publishToMavenLocal]
 dir = "java-client"
-depends = ["build --release"]
+depends = ["build --release --static"]
 run = "gradle publishToMavenLocal"

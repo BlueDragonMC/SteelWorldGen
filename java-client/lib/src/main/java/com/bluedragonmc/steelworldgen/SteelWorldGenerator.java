@@ -1,6 +1,5 @@
 package com.bluedragonmc.steelworldgen;
 
-import com.bluedragonmc.steelworldgen.steel_provider.ByteBuffer;
 import net.minestom.server.MinecraftServer;
 import net.minestom.server.coordinate.Point;
 import net.minestom.server.instance.block.Block;
@@ -14,20 +13,15 @@ import net.minestom.server.registry.RegistryKey;
 import net.minestom.server.world.biome.Biome;
 import org.jspecify.annotations.NonNull;
 
-import java.lang.foreign.Arena;
-import java.lang.foreign.MemorySegment;
-import java.lang.ref.Cleaner;
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 
-import static com.bluedragonmc.steelworldgen.steel_provider.header_h.*;
-
-class SteelWorldGenerator implements Generator, AutoCloseable {
-    private final MemorySegment worldgenContext;
-    private final Cleaner.Cleanable cleanable;
-
-    private static final Cleaner CLEANER = Cleaner.create();
+class SteelWorldGenerator implements Generator {
+    private final long seed;
+    private final SteelWorldGenServer server;
 
     /**
      * Maps SteelMC biome registry IDs to Minestom biome registry keys.
@@ -73,33 +67,16 @@ class SteelWorldGenerator implements Generator, AutoCloseable {
         return ids;
     }
 
-    SteelWorldGenerator(long seed) {
-        steel_provider_init();
-        MemorySegment ctx = steel_provider_worldgen_ctx_new(seed);
-        this.worldgenContext = ctx;
-        this.cleanable = CLEANER.register(this, () -> steel_provider_worldgen_ctx_free(ctx));
-    }
-
-    @Override
-    public void close() {
-        this.cleanable.clean();
+    SteelWorldGenerator(long seed, SteelWorldGenServer server) {
+        this.seed = seed;
+        this.server = server;
     }
 
     private byte[] generateChunkSections(int chunkX, int chunkZ) {
-        try (Arena arena = Arena.ofConfined()) {
-            MemorySegment raw = steel_provider_generate(arena, worldgenContext, chunkX, chunkZ);
-            try {
-                long lenLong = ByteBuffer.len(raw);
-                MemorySegment ptr = ByteBuffer.ptr(raw);
-
-                int len = Math.toIntExact(lenLong);
-                MemorySegment data = ptr.reinterpret(len, arena, null);
-                byte[] bytes = new byte[len];
-                data.asByteBuffer().get(bytes);
-                return bytes;
-            } finally {
-                steel_provider_bytebuf_free(raw);
-            }
+        try {
+            return server.requestChunk(seed, chunkX, chunkZ);
+        } catch (IOException e) {
+            throw new UncheckedIOException("Failed to generate chunk " + chunkX + "," + chunkZ, e);
         }
     }
 
