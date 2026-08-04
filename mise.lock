@@ -74,6 +74,9 @@ url = "https://download.java.net/java/GA/jdk25.0.2/b1e0dfa218384cb9959bdcb897162
 version = "nightly-2026-07-23"
 backend = "core:rust"
 
+[tools.rust.options]
+targets = "x86_64-unknown-linux-musl"
+
 [[tools.zig]]
 version = "0.16.0"
 backend = "core:zig"
