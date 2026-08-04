@@ -1,10 +1,16 @@
 # SteelWorldGen
 
-![GitHub License](https://img.shields.io/github/license/BlueDragonMC/SteelWorldGen)
+![GitHub License](https://img.shields.io/github/license/BlueDragonMC/SteelWorldGen)\*
 ![GitHub last commit](https://img.shields.io/github/last-commit/BlueDragonMC/SteelWorldGen)
 ![Minestom version](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2FBlueDragonMC%2FSteelWorldGen%2Fmain%2Fjava-client%2Fgradle%2Flibs.versions.toml&query=%24.versions.minestom&label=Minestom%20Version)
 
 Uses [SteelMC](https://github.com/Steel-Foundation/SteelMC/) as a library to implement vanilla Minecraft world generation in a Minestom world generator.
+
+<small>
+
+_\* SteelMC is licensed under the AGPLv3 license. Only the Java libraries in this repo are Apache-2.0. See [LICENSE.md](./LICENSE.md) for more details._
+
+</small>
 
 ## How it works
 
