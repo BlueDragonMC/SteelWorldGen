@@ -14,4 +14,6 @@ META-INF/LICENSE-AGPL.txt and is also available at
 https://www.gnu.org/licenses/agpl-3.0.txt.
 
 Everything else in this archive (the Java library) is licensed under the
-Apache License, Version 2.0.
+Apache License, Version 2.0. The full license text is included in this
+archive at META-INF/LICENSE-Apache-2.0.txt and is also available at
+https://www.apache.org/licenses/LICENSE-2.0.txt.

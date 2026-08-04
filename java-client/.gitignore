@@ -12,3 +12,6 @@ bridge/src/main/resources/native/steel-provider
 # This file is copied when running `mise run copy-binary` and is included in the final JAR,
 # but there's no reason to keep it in the repository since it's just copied from `steel-provider/LICENSE-AGPL`
 bridge/src/main/resources/META-INF/LICENSE-AGPL.txt
+
+# Same thing with this file, but from `LICENSE-Apache-2.0` instead (in the repo root)
+bridge/src/main/resources/META-INF/LICENSE-Apache-2.0.txt

@@ -38,6 +38,7 @@ PROFILE="{{ 'release' if usage.release else 'debug' }}"
 TARGET_DIR="{{ 'target/x86_64-unknown-linux-musl' if usage.static else 'target' }}"
 cp -fv "steel-provider/${TARGET_DIR}/${PROFILE}/steel-provider" java-client/bridge/src/main/resources/native/steel-provider
 cp -fv "steel-provider/LICENSE-AGPL" java-client/bridge/src/main/resources/META-INF/LICENSE-AGPL.txt
+cp -fv "LICENSE-Apache-2.0" java-client/bridge/src/main/resources/META-INF/LICENSE-Apache-2.0.txt
 chmod +x java-client/bridge/src/main/resources/native/steel-provider
 """
 
