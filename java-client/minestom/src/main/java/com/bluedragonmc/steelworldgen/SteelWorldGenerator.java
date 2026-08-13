@@ -25,13 +25,6 @@ class SteelWorldGenerator implements Generator {
 
     /**
      * Maps SteelMC biome registry IDs to Minestom biome registry keys.
-     * <p>
-     * SteelMC registers the vanilla biomes in alphabetical order of their keys,
-     * so the biome IDs in its chunk packets are alphabetically ordered. Minestom's
-     * biome registry instead follows vanilla's own (non-alphabetical) ordering.
-     * Looking SteelMC's IDs up directly in Minestom's registry therefore yields
-     * the wrong biomes. Sorting Minestom's biome keys alphabetically reproduces
-     * SteelMC's ID assignment, giving an exact ID-to-key translation.
      */
     private static final RegistryKey<Biome>[] BIOMES_BY_STEEL_ID = buildBiomeMapping();
 

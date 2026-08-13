@@ -40,6 +40,9 @@ byte[] data
 
   See https://minecraft.wiki/w/Java_Edition_protocol/Chunk_format#Data_structure
   for more details. The data array here is the same as the one mentioned on the wiki.
+  Note that Biome IDs are normalized to the alphabetical rank of each biome's key
+  (e.g. `minecraft:badlands` is 0, `minecraft:plains` is 40). Clients may need to
+  adapt this ordering to the ordering that their registries use.
 
 - **status 1 (error)** — `data` is a UTF-8 error message.
 

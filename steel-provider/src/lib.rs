@@ -1,6 +1,6 @@
 use std::collections::{VecDeque, hash_map::Entry};
 use std::io::Cursor;
-use std::sync::{Arc, Mutex, Once, RwLock};
+use std::sync::{Arc, Mutex, Once, OnceLock, RwLock};
 
 use glam::IVec3;
 use rayon::ThreadPoolBuilder;
@@ -12,7 +12,7 @@ use steel_core::block_entity::init_block_entities;
 use steel_core::chunk::Chunk;
 use steel_core::chunk::chunk_holder::ChunkHolder;
 use steel_core::chunk::chunk_ticket_manager::ChunkTicketLevel;
-use steel_core::chunk::section::{ChunkSection, Sections};
+use steel_core::chunk::section::{ChunkSection, SectionHolder, Sections};
 use steel_core::chunk::status::ChunkStatus;
 use steel_core::entity::init_entities;
 use steel_core::level_data::WorldGenerationSettings;
@@ -495,17 +495,64 @@ impl WorldgenContext {
     }
 }
 
+/// Maps SteelMC's biome registry IDs to a canonical alphabetical ordering of
+/// biome keys.
+static BIOME_TRANSLATION: OnceLock<Vec<u16>> = OnceLock::new();
+
+/// Returns `translation` where `translation[steel_biome_id]` is the
+/// alphabetical rank of that biome's key (0-based, all biomes sorted by
+/// `namespace:path`). Requires [`initialize`] to have run.
+#[must_use]
+pub fn biome_translation() -> &'static [u16] {
+    BIOME_TRANSLATION.get_or_init(|| {
+        let biomes = REGISTRY.biomes.iter();
+        let mut entries: Vec<(String, usize)> = biomes
+            .map(|(id, biome)| (biome.key.to_string(), id))
+            .collect();
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut translation = vec![0u16; entries.len()];
+        for (rank, (_, id)) in entries.into_iter().enumerate() {
+            translation[id] = rank as u16;
+        }
+        translation
+    })
+}
+
+/// Rewrites a section's biome palette so every biome ID is the alphabetical
+/// rank of its key (see [`biome_translation`]).
+fn remap_biomes(section: &SectionHolder, translation: &[u16]) {
+    let mut guard = section.write();
+    guard.biomes.finalize_building();
+    guard.biomes.enter_building_mode();
+    for qy in 0..4 {
+        for qz in 0..4 {
+            for qx in 0..4 {
+                let id = guard.biomes.get(qx, qy, qz);
+                guard
+                    .biomes
+                    .set(qx, qy, qz, translation[id as usize]);
+            }
+        }
+    }
+    guard.biomes.finalize_building();
+}
+
 /// Serialize a chunk's sections (block states and biomes) into the raw network
 /// section byte stream that a client-side `ChunkData.Section` reader consumes.
 ///
 /// Each section is finalized and its counters recounted before writing, so this
 /// works whether the chunk came from [`WorldgenContext::generate`] or
 /// [`WorldgenContext::generate_with_structures`].
+///
+/// Biome IDs are normalized to alphabetical key order (see
+/// [`biome_translation`]), making the output identical across builds.
 #[must_use]
 pub fn serialize_chunk_sections(chunk: &Chunk) -> Vec<u8> {
+    let translation = biome_translation();
     let mut cursor = Cursor::new(Vec::new());
     for section in &chunk.sections().sections {
         section.write().recalculate_counts();
+        remap_biomes(section, translation);
         section.read().write(&mut cursor);
     }
     cursor.into_inner()
@@ -515,6 +562,7 @@ pub fn serialize_chunk_sections(chunk: &Chunk) -> Vec<u8> {
 mod tests {
     use super::*;
     use steel_registry::vanilla_blocks;
+    use steel_registry::RegistryExt;
     use steel_utils::BlockPos;
 
     #[test]
@@ -606,5 +654,92 @@ mod tests {
             !bytes.is_empty(),
             "serialized chunk sections must produce some data"
         );
+    }
+
+    #[test]
+    fn biome_translation_is_total_and_alphabetical() {
+        initialize();
+
+        let translation = biome_translation();
+        let len = REGISTRY.biomes.len();
+        assert_eq!(translation.len(), len);
+
+        // The translation must be a bijection (each rank used exactly once),
+        // so every SteelMC biome ID round-trips to exactly one canonical ID.
+        let mut seen = vec![false; len];
+        for &rank in translation {
+            let rank = rank as usize;
+            assert!(rank < len, "rank {rank} out of range for {len} biomes");
+            assert!(!seen[rank], "rank {rank} assigned to multiple biome IDs");
+            seen[rank] = true;
+        }
+
+        // Every SteelMC biome ID must map to the alphabetical rank of its key.
+        let mut keys: Vec<String> = REGISTRY
+            .biomes
+            .iter()
+            .map(|(_, biome)| biome.key.to_string())
+            .collect();
+        keys.sort();
+        for (id, biome) in REGISTRY.biomes.iter() {
+            let expected = keys
+                .binary_search(&biome.key.to_string())
+                .expect("every registered biome key must be in the sorted list");
+            assert_eq!(
+                translation[id] as usize,
+                expected,
+                "biome {} must map to its alphabetical rank",
+                biome.key
+            );
+        }
+    }
+
+    #[test]
+    fn serialize_normalizes_every_biome_cell_through_translation() {
+        initialize();
+
+        let ctx = WorldgenContext::new(42);
+        let chunk = ctx.generate_with_structures(0, 0);
+
+        // Replace every biome cell with a scrambled but valid registry ID so the
+        // translation is genuinely exercised rather than being an identity (which
+        // it is on filesystems where SteelMC happens to register alphabetically).
+        let n = REGISTRY.biomes.len() as u16;
+        let mut before: Vec<u16> = Vec::new();
+        for section in &chunk.sections().sections {
+            let mut guard = section.write();
+            guard.biomes.enter_building_mode();
+            for qy in 0..4 {
+                for qz in 0..4 {
+                    for qx in 0..4 {
+                        let scrambled = ((qy as u16 + 1) * 17 + (qz as u16 + 1) * 5 + qx as u16) % n;
+                        before.push(scrambled);
+                        guard.biomes.set(qx, qy, qz, scrambled);
+                    }
+                }
+            }
+            guard.biomes.finalize_building();
+        }
+
+        let _ = serialize_chunk_sections(&chunk);
+
+        let translation = biome_translation();
+        let mut idx = 0;
+        for section in &chunk.sections().sections {
+            let guard = section.read();
+            for qy in 0..4 {
+                for qz in 0..4 {
+                    for qx in 0..4 {
+                        let after = guard.biomes.get(qx, qy, qz);
+                        assert_eq!(
+                            after,
+                            translation[before[idx] as usize],
+                            "serialization must rewrite every biome cell to the alphabetical rank of its key"
+                        );
+                        idx += 1;
+                    }
+                }
+            }
+        }
     }
 }

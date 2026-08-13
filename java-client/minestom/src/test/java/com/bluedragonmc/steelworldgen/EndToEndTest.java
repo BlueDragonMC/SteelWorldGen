@@ -68,10 +68,11 @@ class EndToEndTest {
 
         instance.setGenerator(SteelWorldGenProvider.getGenerator(42L));
 
-        // SteelMC assigns biome IDs alphabetically (badlands=0, ..., plains=40, ...),
-        // whereas Minestom's biome registry uses vanilla's own non-alphabetical order
-        // (plains=0). If the raw packet IDs were looked up directly against Minestom's
-        // registry, every biome would be mis-translated. This test guards that mapping.
+        // steel-provider normalizes biome IDs in its chunk packets to alphabetical
+        // key order (badlands=0, ..., plains=40, ...), whereas Minestom's biome
+        // registry uses vanilla's own non-alphabetical order. If the raw packet IDs
+        // were looked up directly against Minestom's registry, every biome would be
+        // mis-translated. This test guards that mapping.
         int[][] chunks = {{0, 0}, {1, 0}, {0, 1}, {1, 1}, {4, 0}, {-2, 1}, {3, 3}, {5, 5}, {-5, -3}};
         for (int[] c : chunks) {
             instance.loadChunk(new Pos(c[0] * 16, 64, c[1] * 16)).join();
