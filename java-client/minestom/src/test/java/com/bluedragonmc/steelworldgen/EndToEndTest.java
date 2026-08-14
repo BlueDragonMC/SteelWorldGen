@@ -104,9 +104,7 @@ class EndToEndTest {
         instance.setGenerator(SteelWorldGenProvider.getGenerator(42L));
 
         // Seed 42: a dark_oak trunk straddles z=16 between chunks (6,0) and (6,1)
-        // at world x=111, y=74..76, and its canopy crosses z=16 at x=82..84, y=77..79.
-        instance.loadChunk(new Pos(5 * 16, 64, 0)).join();
-        instance.loadChunk(new Pos(5 * 16, 64, 16)).join();
+        // at world x=111, y=74..76, and its canopy crosses z=16 at x=108..111, y=77..79.
         instance.loadChunk(new Pos(6 * 16, 64, 0)).join();
         instance.loadChunk(new Pos(6 * 16, 64, 16)).join();
 
@@ -115,7 +113,7 @@ class EndToEndTest {
         assertEquals("dark_oak_log", leftSide, "trunk block south of border");
         assertEquals("dark_oak_log", rightSide, "trunk block north of border");
 
-        assertTrue(instance.getBlock(83, 77, 15).compare(Block.DARK_OAK_LEAVES), "canopy south of border");
-        assertTrue(instance.getBlock(83, 77, 16).compare(Block.DARK_OAK_LEAVES), "canopy north of border");
+        assertTrue(instance.getBlock(110, 78, 15).compare(Block.DARK_OAK_LEAVES), "canopy south of border");
+        assertTrue(instance.getBlock(110, 78, 16).compare(Block.DARK_OAK_LEAVES), "canopy north of border");
     }
 }

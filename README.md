@@ -1,6 +1,6 @@
 # SteelWorldGen
 
-![GitHub License](https://img.shields.io/github/license/BlueDragonMC/SteelWorldGen)\*
+![GitHub License](https://img.shields.io/badge/license-Apache--2.0-green)\*
 ![GitHub last commit](https://img.shields.io/github/last-commit/BlueDragonMC/SteelWorldGen)
 ![Minestom version](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2FBlueDragonMC%2FSteelWorldGen%2Fmain%2Fjava-client%2Fgradle%2Flibs.versions.toml&query=%24.versions.minestom&label=Minestom%20Version)
 
