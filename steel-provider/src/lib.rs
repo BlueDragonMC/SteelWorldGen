@@ -1,13 +1,13 @@
 use std::io::Cursor;
-use std::sync::{Arc, Mutex, Once, OnceLock};
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Once, OnceLock};
+use std::time::Duration;
 
 use rayon::ThreadPoolBuilder;
 
 use steel_core::behavior::init_behaviors;
 use steel_core::block_entity::init_block_entities;
 use steel_core::chunk::Chunk;
-use steel_core::chunk::chunk_request::{ChunkRequestState, ChunkTicketKind};
 use steel_core::chunk::section::{ChunkSection, SectionHolder, Sections};
 use steel_core::chunk::status::ChunkStatus;
 use steel_core::entity::init_entities;
@@ -20,13 +20,11 @@ use steel_utils::types::{Difficulty, GameType};
 use steel_utils::{ChunkPos, Identifier};
 use steel_worldgen::biomes::BiomeSourceKind;
 
+mod batch;
+use batch::{BatchCoordinator, DriverSignal};
+
 const MIN_Y: i32 = -64;
 const HEIGHT: i32 = 384;
-
-/// How long a chunk request may take before [`WorldgenContext::generate_with_structures`]
-/// gives up. The first request for an area is slow because the scheduler
-/// generates the full dependency pyramid (structure starts out to radius 8).
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
 static INIT: Once = Once::new();
 
@@ -46,36 +44,21 @@ pub fn initialize() {
 ///
 /// Create one per seed and reuse it for all chunks in that world.
 pub struct WorldgenContext {
+    /// Coalesces concurrent per-chunk requests into single held requests.
+    /// Declared before `world` so its ticket handle is released while the
+    /// world is still alive.
+    batch: Arc<BatchCoordinator>,
+    /// The batch-coordination worker thread (submit / poll / complete).
+    batch_worker: Option<std::thread::JoinHandle<()>>,
     world: Arc<World>,
     /// Kept alive so [`Drop`] can drain in-flight chunk-runtime tasks before
-    /// the world is dropped (steel-core's generator context asserts the world
-    /// is still alive when a task runs).
+    /// the world is dropped.
     runtime: Arc<tokio::runtime::Runtime>,
-    /// The dedicated scheduling-driver thread. steel-core requires
-    /// `ChunkMap::advance_scheduling` to be driven from a single thread; this
-    /// thread advances scheduling continuously while concurrent chunk requests
-    /// queue tickets and poll for readiness.
+    /// Steel-core requires `ChunkMap::advance_scheduling` to be driven from a
+    /// single thread; this is that thread.
     driver: Option<std::thread::JoinHandle<()>>,
     /// Signals the driver thread to stop on drop.
-    driver_stop: Arc<std::sync::atomic::AtomicBool>,
-    /// Wake-up signal for the driver thread (see [`DriverSignal`]).
-    driver_signal: Arc<DriverSignal>,
-}
-
-/// Coordination between the driver thread and concurrent chunk requests.
-///
-/// The driver advances scheduling on a fixed cadence while any request is in
-/// flight, but sleeps long when idle so it burns no CPU between bursts. A
-/// request that queues fresh tickets bumps `inflight` and wakes the driver
-/// immediately so the first chunk of a burst has no added latency.
-struct DriverSignal {
-    /// Number of `generate_with_structures` calls currently waiting for their
-    /// request to become ready.
-    inflight: std::sync::atomic::AtomicUsize,
-    /// Paired with `mutex` for the driver's timed idle wait.
-    cvar: std::sync::Condvar,
-    /// Guards the `inflight == 0` check so no wake-up is lost.
-    mutex: Mutex<()>,
+    driver_stop: Arc<AtomicBool>,
 }
 
 impl WorldgenContext {
@@ -137,12 +120,8 @@ impl WorldgenContext {
             ))
             .expect("failed to create world");
 
-        let driver_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let driver_signal = Arc::new(DriverSignal {
-            inflight: std::sync::atomic::AtomicUsize::new(0),
-            cvar: std::sync::Condvar::new(),
-            mutex: Mutex::new(()),
-        });
+        let driver_stop = Arc::new(AtomicBool::new(false));
+        let driver_signal = DriverSignal::new();
         let driver = {
             let world = Arc::clone(&world);
             let driver_stop = Arc::clone(&driver_stop);
@@ -150,13 +129,10 @@ impl WorldgenContext {
             std::thread::Builder::new()
                 .name("steelgen-drive".into())
                 .spawn(move || {
-                    while !driver_stop.load(std::sync::atomic::Ordering::Acquire) {
+                    while !driver_stop.load(Ordering::Acquire) {
                         world.chunk_map.advance_scheduling();
-                        if signal.inflight.load(std::sync::atomic::Ordering::Relaxed) == 0 {
-                            let guard = signal.mutex.lock().unwrap();
-                            let _ = signal
-                                .cvar
-                                .wait_timeout(guard, Duration::from_millis(100));
+                        if signal.idle() {
+                            signal.wait(Duration::from_millis(100));
                         } else {
                             std::thread::sleep(Duration::from_millis(1));
                         }
@@ -165,86 +141,41 @@ impl WorldgenContext {
                 .expect("failed to spawn scheduling driver thread")
         };
 
+        let batch = BatchCoordinator::new(world.chunk_map.clone(), Arc::clone(&driver_signal));
+        let batch_worker = batch.spawn_worker();
+
         Self {
+            batch,
+            batch_worker: Some(batch_worker),
             world,
             runtime,
             driver: Some(driver),
             driver_stop,
-            driver_signal,
         }
     }
 
     /// Generate a fully decorated chunk at `(chunk_x, chunk_z)`.
     ///
-    /// Requests a 3×3 area around the target at `Features` status via SteelMC's
-    /// chunk scheduler. Requesting the neighborhood (not just the target) makes
-    /// the scheduler run the neighboring chunks' feature passes too, so
-    /// decorations that write across chunk borders (trees, structures, ...) are
-    /// applied before the target is returned. The scheduler walks the full
-    /// generation pyramid — structure starts (out to radius 8), biomes, noise,
-    /// surface, carvers, features — on its background thread pool; this call
-    /// just polls the request until it is ready.
-    ///
-    /// The returned [`Chunk`] contains all block states and biomes for the full
-    /// overworld column (`y = -64 .. 320`). Read blocks with
-    /// [`Chunk::get_block_state`].
+    /// Requests the 3×3 neighborhood at `Features` status via SteelMC's
+    /// scheduler so cross-border decorations (trees, structures, ...) are
+    /// applied before the target is returned, then blocks until ready. The
+    /// returned [`Chunk`] holds the full overworld column (`y = -64 .. 320`);
+    /// read blocks with [`Chunk::get_block_state`].
     ///
     /// # Panics
-    /// Panics if the request is not satisfied within [`REQUEST_TIMEOUT`].
+    /// Panics if the request is not satisfied within 60 seconds.
     #[must_use]
     pub fn generate_with_structures(&self, chunk_x: i32, chunk_z: i32) -> Chunk {
         let center = ChunkPos::new(chunk_x, chunk_z);
-
-        // Queue a fresh 3×3 request for the target chunk.
-        let request = self.world.chunk_map.request_square(
-            center,
-            1,
-            ChunkStatus::Features,
-            ChunkTicketKind::Command,
-        );
-        // Wake the driver immediately for the fresh request.
-        let signal = &self.driver_signal;
-        let guard = signal.mutex.lock().unwrap();
-        let was_zero = signal.inflight.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0;
-        if was_zero {
-            signal.cvar.notify_one();
-        }
-        drop(guard);
-
-        // Wait for readiness. The dedicated driver thread advances scheduling;
-        // polling and ticket lifecycle are safe to do concurrently.
-        let deadline = Instant::now() + REQUEST_TIMEOUT;
-        loop {
-            if request.poll() == ChunkRequestState::Ready {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "chunk generation for ({chunk_x}, {chunk_z}) did not finish within {REQUEST_TIMEOUT:?}"
-            );
-            std::thread::sleep(Duration::from_millis(1));
-        }
-
-        let ready = request
-            .ready_chunks()
-            .expect("request reported ready but no chunks are available");
-        let holder = ready
-            .holders
-            .iter()
-            .find(|holder| holder.get_pos() == center)
-            .expect("generated neighborhood must contain the requested chunk");
+        let holder = self.batch.request(center);
         let chunk = holder
             .try_chunk(ChunkStatus::Features)
             .expect("requested chunk must be at Features status");
 
-        // Finalize the holder's sections before cloning so we copy compact
-        // palettes instead of building-mode 8 KB cubes, and so each clone's
-        // recalculate_counts has no 4096-cell scan to redo.
-        for section in &chunk.sections().sections {
-            let mut guard = section.write();
-            guard.states.finalize_building();
-            guard.biomes.finalize_building();
-        }
+        // Finalize before cloning so we copy compact palettes instead of
+        // building-mode 8 KB cubes, and so recalculate_counts has no 4096-cell
+        // scan to redo.
+        finalize_sections(chunk);
 
         // Clone sections out of the holder into a fresh Chunk.
         let sections: Vec<ChunkSection> = chunk
@@ -262,29 +193,26 @@ impl WorldgenContext {
             })
             .collect();
 
-        self.driver_signal
-            .inflight
-            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-
-        let result = Chunk::new(
+        Chunk::new(
             Sections::from_owned(sections.into_boxed_slice()),
             center,
             MIN_Y,
             HEIGHT,
             Arc::downgrade(&self.world),
-        );
-        result.prime_final_heightmaps();
-        result
+        )
     }
 }
 
 impl Drop for WorldgenContext {
     fn drop(&mut self) {
-        // Stop the dedicated driver, then the background refill loop, and drain
-        // in-flight chunk-runtime tasks (scheduling epochs, generation tasks,
-        // saves) while the world is still alive. steel-core's generator context
-        // panics if a task runs after its world has been dropped.
-        self.driver_stop.store(true, std::sync::atomic::Ordering::Release);
+        // Stop the batch worker and driver, then drain in-flight chunk-runtime
+        // tasks while the world is still alive (steel-core's generator context
+        // panics if a task runs after its world has been dropped).
+        self.batch.stop();
+        if let Some(worker) = self.batch_worker.take() {
+            let _ = worker.join();
+        }
+        self.driver_stop.store(true, Ordering::Release);
         if let Some(driver) = self.driver.take() {
             let _ = driver.join();
         }
@@ -330,29 +258,41 @@ fn remap_biomes(section: &SectionHolder, translation: &[u16]) {
         for qz in 0..4 {
             for qx in 0..4 {
                 let id = guard.biomes.get(qx, qy, qz);
-                guard
-                    .biomes
-                    .set(qx, qy, qz, translation[id as usize]);
+                guard.biomes.set(qx, qy, qz, translation[id as usize]);
             }
         }
     }
     guard.biomes.finalize_building();
 }
 
+/// Finalizes every section of `chunk` (block states and biomes) so palettes are
+/// compact rather than building-mode 8 KB cubes. Idempotent — no-op on sections
+/// that are already finalized.
+fn finalize_sections(chunk: &Chunk) {
+    for section in &chunk.sections().sections {
+        let mut guard = section.write();
+        guard.states.finalize_building();
+        guard.biomes.finalize_building();
+    }
+}
+
 /// Serialize a chunk's sections (block states and biomes) into the raw network
-/// section byte stream that a client-side `ChunkData.Section` reader consumes.
+/// section byte stream a client-side `ChunkData.Section` reader consumes.
 ///
-/// Each section is finalized and its counters recounted before writing, so this
-/// works whether the chunk came from [`WorldgenContext::generate_with_structures`].
-///
-/// Biome IDs are normalized to alphabetical key order (see
-/// [`biome_translation`]), making the output identical across builds.
+/// Each section is finalized (a no-op when already compact) and its counters
+/// recounted before writing. Biome IDs are normalized to alphabetical key order
+/// (see [`biome_translation`]), making the output identical across builds.
 #[must_use]
 pub fn serialize_chunk_sections(chunk: &Chunk) -> Vec<u8> {
     let translation = biome_translation();
     let mut cursor = Cursor::new(Vec::new());
     for section in &chunk.sections().sections {
-        section.write().recalculate_counts();
+        {
+            let mut guard = section.write();
+            guard.states.finalize_building();
+            guard.biomes.finalize_building();
+            guard.recalculate_counts();
+        }
         remap_biomes(section, translation);
         section.read().write(&mut cursor);
     }
@@ -521,5 +461,52 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn concurrent_generation_does_not_race() {
+        // Contiguous chunks generated from 8 threads: the pattern that used to
+        // panic inside SteelMC's `ChunkGenerationTask::new` (see
+        // examples/burst_race.rs).
+        initialize();
+
+        let ctx = Arc::new(WorldgenContext::new(42));
+        const SIDE: i32 = 9;
+        let half = SIDE / 2;
+        let positions: Vec<(i32, i32)> = (0..SIDE)
+            .flat_map(|dz| (0..SIDE).map(move |dx| (dx - half, dz - half)))
+            .collect();
+        let work = Arc::new(positions);
+        let next = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let ctx = Arc::clone(&ctx);
+            let work = Arc::clone(&work);
+            let next = Arc::clone(&next);
+            handles.push(std::thread::spawn(move || {
+                let mut generated = 0usize;
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    if i >= work.len() {
+                        break;
+                    }
+                    let (x, z) = work[i];
+                    let chunk = ctx.generate_with_structures(x, z);
+                    assert!(
+                        !chunk.sections().sections.is_empty(),
+                        "chunk ({x},{z}) must have generated sections"
+                    );
+                    generated += 1;
+                }
+                generated
+            }));
+        }
+
+        let mut total = 0usize;
+        for handle in handles {
+            total += handle.join().expect("worker thread panicked");
+        }
+        assert_eq!(total, work.len(), "every requested chunk must be generated");
     }
 }
