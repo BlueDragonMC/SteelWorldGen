@@ -28,8 +28,8 @@ public final class SteelWorldGenServer implements AutoCloseable {
     /** JAR resource holding the steel-provider executable. */
     public static final String BINARY_RESOURCE = "/native/steel-provider";
 
-    /** Bytes in a request: seed(8) + chunk_x(4) + chunk_z(4). */
-    private static final int REQUEST_BYTES = 16;
+    /** Bytes in a request: seed(8) + chunk_x(4) + chunk_z(4) + dimension(1). */
+    private static final int REQUEST_BYTES = 17;
 
     private static final long STARTUP_TIMEOUT_MS = 30_000;
     private static final long PROCESS_STOP_TIMEOUT_MS = 5_000;
@@ -106,7 +106,9 @@ public final class SteelWorldGenServer implements AutoCloseable {
     }
 
     /**
-     * Requests the serialized chunk sections for the given chunk, blocking until done.
+     * Requests the serialized chunk sections for the given overworld chunk,
+     * blocking until done. Shorthand for
+     * {@code requestChunk(seed, Dimension.OVERWORLD, chunkX, chunkZ)}.
      *
      * @param seed    world seed
      * @param chunkX  chunk X coordinate
@@ -115,6 +117,21 @@ public final class SteelWorldGenServer implements AutoCloseable {
      * @throws IOException if the request could not be sent or the process failed
      */
     public byte[] requestChunk(long seed, int chunkX, int chunkZ) throws IOException {
+        return requestChunk(seed, Dimension.OVERWORLD, chunkX, chunkZ);
+    }
+
+    /**
+     * Requests the serialized chunk sections for the given chunk in the given
+     * dimension, blocking until done.
+     *
+     * @param seed      world seed
+     * @param dimension dimension to generate
+     * @param chunkX    chunk X coordinate
+     * @param chunkZ    chunk Z coordinate
+     * @return the chunk's sections in Minecraft's network serialization format
+     * @throws IOException if the request could not be sent or the process failed
+     */
+    public byte[] requestChunk(long seed, Dimension dimension, int chunkX, int chunkZ) throws IOException {
         if (closed) {
             throw new IOException("steel-provider server is closed");
         }
@@ -123,7 +140,7 @@ public final class SteelWorldGenServer implements AutoCloseable {
             SocketChannel channel = null;
             try {
                 channel = connections.borrow();
-                byte[] data = requestChunk(channel, seed, chunkX, chunkZ);
+                byte[] data = requestChunk(channel, seed, dimension, chunkX, chunkZ);
                 connections.release(channel);
                 return data;
             } catch (IOException | RuntimeException e) {
@@ -166,11 +183,12 @@ public final class SteelWorldGenServer implements AutoCloseable {
         return process;
     }
 
-    private byte[] requestChunk(SocketChannel channel, long seed, int chunkX, int chunkZ) throws IOException {
+    private byte[] requestChunk(SocketChannel channel, long seed, Dimension dimension, int chunkX, int chunkZ) throws IOException {
         ByteBuffer request = ByteBuffer.allocate(REQUEST_BYTES);
         request.putLong(seed);
         request.putInt(chunkX);
         request.putInt(chunkZ);
+        request.put(dimension.getId());
         request.flip();
         writeFully(channel, request);
 

@@ -15,12 +15,13 @@ a length prefix; the response is variable-size and is length-prefixed with a
 
 ## Request (client → server)
 
-The request is always exactly 16 bytes:
+The request is always exactly 17 bytes:
 
 ```
 u64 seed            big-endian, world seed
 i32 chunk_x         big-endian, chunk coordinate
 i32 chunk_z         big-endian, chunk coordinate
+u8  dimension       0 = overworld, 1 = nether, 2 = the_end
 ```
 
 ## Response (server → client)
@@ -52,7 +53,8 @@ byte[] data
   response, repeat. The server processes requests on a connection in order.
 - The server accepts **multiple concurrent connections**; each is handled on
   its own thread with.
-- The server caches one `WorldgenContext` per seed, created on first use, so
-  repeated requests for the same seed reuse the setup work.
+- The server caches one `WorldgenContext` per (seed, dimension) pair, created
+  on first use, so repeated requests for the same seed and dimension reuse the
+  setup work.
 - A client can close the connection (or the server closes it) after any
   response; the server returns to accept() when it reads EOF.

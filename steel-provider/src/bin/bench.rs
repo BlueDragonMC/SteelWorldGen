@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
-use steel_provider::{WorldgenContext, initialize};
+use steel_provider::{Dimension, WorldgenContext, initialize};
 
 const DEFAULT_SEED: &str = "8500081009970950196";
 
@@ -39,7 +39,7 @@ fn main() {
 
     initialize();
 
-    let ctx = Arc::new(WorldgenContext::new(seed));
+    let ctx = Arc::new(WorldgenContext::new(seed, Dimension::Overworld));
     let half = side / 2;
     let total = (side * side) as usize;
     let positions: Vec<(i32, i32)> = (0..side)

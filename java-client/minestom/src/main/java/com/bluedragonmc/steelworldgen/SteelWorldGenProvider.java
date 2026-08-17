@@ -19,9 +19,20 @@ public class SteelWorldGenProvider {
         }
     }
 
+    /**
+     * Returns an overworld chunk generator for the given seed. Shorthand for
+     * {@code getGenerator(seed, Dimension.OVERWORLD)}.
+     */
     public static Generator getGenerator(long seed) {
+        return getGenerator(seed, Dimension.OVERWORLD);
+    }
+
+    /**
+     * Returns a chunk generator for the given seed and dimension.
+     */
+    public static Generator getGenerator(long seed, Dimension dimension) {
         startServer();
-        return new SteelWorldGenerator(seed, server);
+        return new SteelWorldGenerator(seed, dimension, server);
     }
 
     public static void closeServer() {

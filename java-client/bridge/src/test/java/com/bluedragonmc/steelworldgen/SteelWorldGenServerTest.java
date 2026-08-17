@@ -33,6 +33,19 @@ class SteelWorldGenServerTest {
         }
     }
 
+    @Test void requestsChunksForAllDimensions() throws Exception {
+        try (SteelWorldGenServer server = new SteelWorldGenServer()) {
+            byte[] overworld = server.requestChunk(42, 0, 0);
+            assertTrue(overworld.length > 0, "overworld chunk sections must not be empty");
+
+            byte[] nether = server.requestChunk(42, Dimension.NETHER, 0, 0);
+            assertTrue(nether.length > 0, "nether chunk sections must not be empty");
+
+            byte[] end = server.requestChunk(42, Dimension.THE_END, 0, 0);
+            assertTrue(end.length > 0, "end chunk sections must not be empty");
+        }
+    }
+
     @Test void restartsOwnedProcessAfterCrash() throws Exception {
         try (SteelWorldGenServer server = new SteelWorldGenServer()) {
             byte[] before = server.requestChunk(42, 0, 0);

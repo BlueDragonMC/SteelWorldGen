@@ -13,7 +13,7 @@ use steel_core::chunk::status::ChunkStatus;
 use steel_core::entity::init_entities;
 use steel_core::level_data::WorldGenerationSettings;
 use steel_core::world::{World, WorldConfig, WorldStorageConfig};
-use steel_core::worldgen::{ChunkGeneratorType, OverworldGenerator};
+use steel_core::worldgen::{ChunkGeneratorType, EndGenerator, NetherGenerator, OverworldGenerator};
 use steel_registry::vanilla_dimension_types;
 use steel_registry::{REGISTRY, Registry};
 use steel_utils::types::{Difficulty, GameType};
@@ -23,8 +23,33 @@ use steel_worldgen::biomes::BiomeSourceKind;
 mod batch;
 use batch::{BatchCoordinator, DriverSignal};
 
-const MIN_Y: i32 = -64;
-const HEIGHT: i32 = 384;
+/// The dimension a [`WorldgenContext`] generates chunks for.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Dimension {
+    Overworld = 0,
+    Nether = 1,
+    End = 2,
+}
+
+impl Dimension {
+    /// Decodes a dimension from its one-byte wire representation.
+    #[must_use]
+    pub const fn from_byte(byte: u8) -> Option<Self> {
+        match byte {
+            0 => Some(Self::Overworld),
+            1 => Some(Self::Nether),
+            2 => Some(Self::End),
+            _ => None,
+        }
+    }
+
+    /// Encodes this dimension to its one-byte wire representation.
+    #[must_use]
+    pub const fn to_byte(self) -> u8 {
+        self as u8
+    }
+}
 
 static INIT: Once = Once::new();
 
@@ -40,9 +65,9 @@ pub fn initialize() {
     });
 }
 
-/// Overworld chunk generator ready for use.
+/// Chunk generator for a single (seed, dimension) pair, ready for use.
 ///
-/// Create one per seed and reuse it for all chunks in that world.
+/// Create one per seed and dimension and reuse it for all chunks in that world.
 pub struct WorldgenContext {
     /// Coalesces concurrent per-chunk requests into single held requests.
     /// Declared before `world` so its ticket handle is released while the
@@ -62,9 +87,9 @@ pub struct WorldgenContext {
 }
 
 impl WorldgenContext {
-    /// Create a generator for the given world seed.
+    /// Create a generator for the given world seed in the given [`Dimension`].
     #[must_use]
-    pub fn new(seed: u64) -> Self {
+    pub fn new(seed: u64, dimension: Dimension) -> Self {
         let generation_pool = Arc::new(
             ThreadPoolBuilder::new()
                 .num_threads(
@@ -78,28 +103,46 @@ impl WorldgenContext {
                 .expect("failed to create rayon generation pool"),
         );
 
-        let generator = Arc::new(ChunkGeneratorType::Overworld(OverworldGenerator::new(
-            None,
-            BiomeSourceKind::overworld(seed),
-            seed,
-            &generation_pool,
-        )));
+        let generator = Arc::new(match dimension {
+            Dimension::Overworld => ChunkGeneratorType::Overworld(OverworldGenerator::new(
+                None,
+                BiomeSourceKind::overworld(seed),
+                seed,
+                &generation_pool,
+            )),
+            Dimension::Nether => ChunkGeneratorType::Nether(NetherGenerator::new(
+                None,
+                BiomeSourceKind::nether(seed),
+                seed,
+                &generation_pool,
+            )),
+            Dimension::End => ChunkGeneratorType::End(EndGenerator::new(
+                None,
+                BiomeSourceKind::end(seed),
+                seed,
+                &generation_pool,
+            )),
+        });
 
         let runtime =
             Arc::new(tokio::runtime::Runtime::new().expect("failed to create Tokio runtime"));
 
-        let dim_type = &vanilla_dimension_types::OVERWORLD;
+        let (dim_type, generator_name, sea_level) = match dimension {
+            Dimension::Overworld => (&vanilla_dimension_types::OVERWORLD, "overworld", 63),
+            Dimension::Nether => (&vanilla_dimension_types::THE_NETHER, "the_nether", 32),
+            Dimension::End => (&vanilla_dimension_types::THE_END, "the_end", 0),
+        };
         let generation_settings = WorldGenerationSettings {
-            generator: Identifier::vanilla_static("overworld"),
+            generator: Identifier::vanilla_static(generator_name),
             config: toml::Value::Table(toml::map::Map::new()),
             dimension_type: dim_type.key.clone(),
-            min_y: MIN_Y,
-            height: HEIGHT,
+            min_y: dim_type.min_y,
+            height: dim_type.height,
         };
         let world = runtime
             .block_on(World::new_with_config(
                 runtime.clone(),
-                Identifier::vanilla_static("overworld"),
+                Identifier::vanilla_static(generator_name),
                 dim_type,
                 seed as i64,
                 WorldConfig {
@@ -112,7 +155,7 @@ impl WorldgenContext {
                     max_chained_neighbor_updates: 1_000_000,
                     compression: None,
                     is_flat: false,
-                    sea_level: 63,
+                    sea_level,
                     default_gamemode: GameType::Survival,
                     difficulty: Difficulty::Normal,
                 },
@@ -159,8 +202,9 @@ impl WorldgenContext {
     /// Requests the 3×3 neighborhood at `Features` status via SteelMC's
     /// scheduler so cross-border decorations (trees, structures, ...) are
     /// applied before the target is returned, then blocks until ready. The
-    /// returned [`Chunk`] holds the full overworld column (`y = -64 .. 320`);
-    /// read blocks with [`Chunk::get_block_state`].
+    /// returned [`Chunk`] holds the full dimension column (e.g. `y = -64 .. 320`
+    /// for the overworld, `y = 0 .. 256` for the nether and the end); read
+    /// blocks with [`Chunk::get_block_state`].
     ///
     /// # Panics
     /// Panics if the request is not satisfied within 60 seconds.
@@ -176,6 +220,9 @@ impl WorldgenContext {
         // building-mode 8 KB cubes, and so recalculate_counts has no 4096-cell
         // scan to redo.
         finalize_sections(chunk);
+
+        let min_y = chunk.min_y();
+        let height = chunk.height();
 
         // Clone sections out of the holder into a fresh Chunk.
         let sections: Vec<ChunkSection> = chunk
@@ -196,8 +243,8 @@ impl WorldgenContext {
         Chunk::new(
             Sections::from_owned(sections.into_boxed_slice()),
             center,
-            MIN_Y,
-            HEIGHT,
+            min_y,
+            height,
             Arc::downgrade(&self.world),
         )
     }
@@ -310,7 +357,7 @@ mod tests {
     fn generate_with_structures_returns_terrain() {
         initialize();
 
-        let ctx = WorldgenContext::new(42);
+        let ctx = WorldgenContext::new(42, Dimension::Overworld);
         let chunk = ctx.generate_with_structures(0, 0);
 
         // Above the overworld build limit — should be air
@@ -340,12 +387,14 @@ mod tests {
     fn generate_with_structures_is_repeatable() {
         initialize();
 
-        let ctx = WorldgenContext::new(42);
+        let ctx = WorldgenContext::new(42, Dimension::Overworld);
         let first = ctx.generate_with_structures(0, 0);
         let second = ctx.generate_with_structures(0, 0);
 
+        let min_y = first.min_y();
+        let height = first.height();
         let mut differing = 0_u64;
-        for y in (MIN_Y..MIN_Y + HEIGHT).step_by(1) {
+        for y in (min_y..min_y + height).step_by(1) {
             for z in 0..16 {
                 for x in 0..16 {
                     let a = first.get_block_state(BlockPos::new(x, y, z));
@@ -366,7 +415,7 @@ mod tests {
     fn serialized_sections_are_not_empty() {
         initialize();
 
-        let ctx = WorldgenContext::new(42);
+        let ctx = WorldgenContext::new(42, Dimension::Overworld);
         let chunk = ctx.generate_with_structures(0, 0);
 
         let bytes = serialize_chunk_sections(&chunk);
@@ -417,7 +466,7 @@ mod tests {
     fn serialize_normalizes_every_biome_cell_through_translation() {
         initialize();
 
-        let ctx = WorldgenContext::new(42);
+        let ctx = WorldgenContext::new(42, Dimension::Overworld);
         let chunk = ctx.generate_with_structures(0, 0);
 
         // Replace every biome cell with a scrambled but valid registry ID so the
@@ -469,7 +518,7 @@ mod tests {
         // examples/burst_race.rs).
         initialize();
 
-        let ctx = Arc::new(WorldgenContext::new(42));
+        let ctx = Arc::new(WorldgenContext::new(42, Dimension::Overworld));
         const SIDE: i32 = 9;
         let half = SIDE / 2;
         let positions: Vec<(i32, i32)> = (0..SIDE)
@@ -507,5 +556,36 @@ mod tests {
             total += handle.join().expect("worker thread panicked");
         }
         assert_eq!(total, work.len(), "every requested chunk must be generated");
+    }
+
+    #[test]
+    fn nether_and_end_generate_terrain() {
+        initialize();
+
+        for dimension in [Dimension::Nether, Dimension::End] {
+            let ctx = WorldgenContext::new(42, dimension);
+            let chunk = ctx.generate_with_structures(0, 0);
+
+            // The nether and the end both have min_y 0 and height 256 per the
+            // dimension types, so a chunk must hold exactly 16 sections.
+            let min_y = chunk.min_y();
+            let height = chunk.height();
+            assert_eq!(min_y, 0, "{dimension:?} chunks must start at y=0");
+            assert_eq!(height, 256, "{dimension:?} chunks must be 256 blocks tall");
+            assert_eq!(chunk.sections().sections.len(), 16);
+
+            // Spawn chunk must contain solid terrain somewhere.
+            let mut solid_blocks = 0_u64;
+            for y in min_y..min_y + height {
+                let state = chunk.get_block_state(BlockPos::new(0, y, 0));
+                if state != vanilla_blocks::AIR.default_state() {
+                    solid_blocks += 1;
+                }
+            }
+            assert!(
+                solid_blocks > 0,
+                "{dimension:?} chunk (0,0) must contain solid terrain"
+            );
+        }
     }
 }

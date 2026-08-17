@@ -1,9 +1,11 @@
 package com.bluedragonmc.steelworldgen;
 
+import net.kyori.adventure.key.Key;
 import net.minestom.server.MinecraftServer;
 import net.minestom.server.coordinate.Pos;
 import net.minestom.server.instance.Instance;
 import net.minestom.server.instance.block.Block;
+import net.minestom.server.registry.RegistryKey;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 
@@ -95,6 +97,40 @@ class EndToEndTest {
                 biomes,
                 "biomes near spawn (seed 42) must match SteelMC's vanilla biomes, not a misaligned registry lookup"
         );
+    }
+
+    @Test void netherAndEndGeneratorsProduceTerrain() {
+        MinecraftServer.init();
+
+        // The nether and the end are their own dimensions with min_y=0 and
+        // height=256, so their instances must use the matching dimension type
+        // for Minestom to give the generator a correctly sized unit.
+        RegistryKey<net.minestom.server.world.DimensionType> netherKey =
+                MinecraftServer.getDimensionTypeRegistry().getKey(Key.key("minecraft:the_nether"));
+        Instance nether = MinecraftServer.getInstanceManager().createInstanceContainer(netherKey);
+        nether.setGenerator(SteelWorldGenProvider.getGenerator(42L, Dimension.NETHER));
+        nether.loadChunk(new Pos(0, 0, 0)).join();
+        assertTrue(hasTerrain(nether, 0, 0), "nether chunk (0,0) must contain solid terrain");
+
+        RegistryKey<net.minestom.server.world.DimensionType> endKey =
+                MinecraftServer.getDimensionTypeRegistry().getKey(Key.key("minecraft:the_end"));
+        Instance end = MinecraftServer.getInstanceManager().createInstanceContainer(endKey);
+        end.setGenerator(SteelWorldGenProvider.getGenerator(42L, Dimension.THE_END));
+        end.loadChunk(new Pos(0, 0, 0)).join();
+        assertTrue(hasTerrain(end, 0, 0), "end chunk (0,0) must contain solid terrain");
+    }
+
+    private static boolean hasTerrain(Instance instance, int chunkX, int chunkZ) {
+        for (int z = 0; z < 16; z++) {
+            for (int x = 0; x < 16; x++) {
+                for (int y = 0; y < 128; y++) {
+                    if (!instance.getBlock(chunkX * 16 + x, y, chunkZ * 16 + z).air()) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
     @Test void crossBorderTreesSpanChunkBoundary() {

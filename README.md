@@ -39,11 +39,19 @@ If you only need to talk to a steel-provider server without Minestom, depend on 
 ## Usage
 
 ```java
-Instance instance = MinecraftServer.getInstanceManager().createInstanceContainer();
-
 long seed = 42L;
-instance.setGenerator(SteelWorldGenProvider.getGenerator(seed));
-instance.setChunkSupplier(LightingChunk::new);
+
+Instance overworld = MinecraftServer.getInstanceManager().createInstanceContainer();
+overworld.setGenerator(SteelWorldGenProvider.getGenerator(42L));
+overworld.setChunkSupplier(LightingChunk::new);
+
+Instance nether = MinecraftServer.getInstanceManager().createInstanceContainer(DimensionType.THE_NETHER);
+nether.setGenerator(SteelWorldGenProvider.getGenerator(seed, Dimension.NETHER));
+nether.setChunkSupplier(LightingChunk::new);
+
+Instance theEnd = MinecraftServer.getInstanceManager().createInstanceContainer(DimensionType.THE_END);
+theEnd.setGenerator(SteelWorldGenProvider.getGenerator(seed, Dimension.THE_END));
+theEnd.setChunkSupplier(LightingChunk::new);
 ```
 
 For a full example, see the `java-client/demo` directory. You can run the demo locally with `mise run demo`.

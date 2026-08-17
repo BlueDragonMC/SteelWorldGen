@@ -12,7 +12,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Instant;
 
-use steel_provider::WorldgenContext;
+use steel_provider::{Dimension, WorldgenContext};
 
 fn main() -> ExitCode {
     steel_provider::initialize();
@@ -26,7 +26,7 @@ fn main() -> ExitCode {
         std::process::exit(2);
     }
 
-    let ctx = Arc::new(WorldgenContext::new(0x5deece66d));
+    let ctx = Arc::new(WorldgenContext::new(0x5deece66d, Dimension::Overworld));
     let half = side_arg / 2;
     let mut positions = Vec::new();
     for z in -half..=half {

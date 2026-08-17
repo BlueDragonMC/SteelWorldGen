@@ -21,6 +21,7 @@ import java.util.List;
 
 class SteelWorldGenerator implements Generator {
     private final long seed;
+    private final Dimension dimension;
     private final SteelWorldGenServer server;
 
     /**
@@ -60,14 +61,15 @@ class SteelWorldGenerator implements Generator {
         return ids;
     }
 
-    SteelWorldGenerator(long seed, SteelWorldGenServer server) {
+    SteelWorldGenerator(long seed, Dimension dimension, SteelWorldGenServer server) {
         this.seed = seed;
+        this.dimension = dimension;
         this.server = server;
     }
 
     private byte[] generateChunkSections(int chunkX, int chunkZ) {
         try {
-            return server.requestChunk(seed, chunkX, chunkZ);
+            return server.requestChunk(seed, dimension, chunkX, chunkZ);
         } catch (IOException e) {
             throw new UncheckedIOException("Failed to generate chunk " + chunkX + "," + chunkZ, e);
         }
