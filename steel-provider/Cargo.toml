@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+libc = "0.2.177"
 rayon = "1.12.0"
 steel-core = { git = "https://github.com/Steel-Foundation/SteelMC", rev = "a6213a682f2b7a727c3205d0f7fd63628acb3fd5" }
 steel-worldgen = { git = "https://github.com/Steel-Foundation/SteelMC", rev = "a6213a682f2b7a727c3205d0f7fd63628acb3fd5" }

@@ -33,6 +33,10 @@ tasks.build {
 tasks.shadowJar {
     duplicatesStrategy = DuplicatesStrategy.INCLUDE
     mergeServiceFiles()
+    // The demo jar's entry point is Bench, which dispatches on the environment:
+    //   PREGEN_SIZE=N  -> square pregen benchmark (Steel harness markers)
+    //   otherwise      -> the playable server
+    mainClass.set("com.bluedragonmc.steelworldgen.demo.Bench")
 }
 
 application {

@@ -8,7 +8,7 @@ Uses [SteelMC](https://github.com/Steel-Foundation/SteelMC/) as a library to imp
 
 <small>
 
-_\* SteelMC is licensed under the AGPLv3 license. Only the Java libraries in this repo are Apache-2.0. See [LICENSE.md](./LICENSE.md) for more details._
+_\* The Java libraries in this repo are Apache-2.0, but SteelMC itself is licensed under the AGPLv3 license. See [LICENSE.md](./LICENSE.md) for more details._
 
 </small>
 
@@ -64,6 +64,21 @@ Chunk generation gets MUCH faster at the expense of a longer compilation time.
    By default the Rust binary is built natively with `cargo build`. To instead cross-compile a fully static binary using [`cargo-zigbuild`](https://github.com/rust-cross/cargo-zigbuild), pass `--static` (`mise run build --release --static`).
 
    The Java library will be built to `java-client/minestom/build/libs/minestom-dev.jar`. If you want to publish it to a Maven repository, modify the hostname in [java-client/minestom/build.gradle.kts](java-client/minestom/build.gradle.kts) and run `mise run publish` (or `mise run publishToMavenLocal` to run `gradle publishToMavenLocal`).
+
+## Performance
+
+This project generates chunks much faster than vanilla Minecraft, but much slower than SteelMC. `steel-provider` itself (the Rust side of this project) is slower than standalone Steel because it needs to account for a different access pattern (Steel knows the entire set of chunks that need to be generated at once, while Minestom world generators only receive requests one chunk at a time). Then, when using it from Minestom, the networking and conversion add an additional performance penalty.
+
+On my machine, I can generate:
+
+- Steel: 877 chunks/second
+- Fabric: 76 chunks/second
+- steel-provider (my Steel wrapper): 465 chunks/second
+- steel-provider + Minestom world generator wrapper: 215 chunks/second
+
+Most of this difference seems to be that Steel is better than steel-provider at spreading work across more available CPU cores.
+
+Reproduce the benchmarks yourself using `mise run bench`. It takes me about 12 minutes to run all 3 trials.
 
 ### AI Disclosure
 

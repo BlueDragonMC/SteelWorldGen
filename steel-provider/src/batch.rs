@@ -170,9 +170,7 @@ impl BatchCoordinator {
         let batch = Arc::clone(self);
         std::thread::Builder::new()
             .name("steelgen-batch".into())
-            .spawn(move || {
-                while batch.worker_step() {}
-            })
+            .spawn(move || while batch.worker_step() {})
             .expect("failed to spawn batch worker thread")
     }
 

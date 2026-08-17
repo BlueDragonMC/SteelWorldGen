@@ -302,8 +302,8 @@ pub fn serialize_chunk_sections(chunk: &Chunk) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use steel_registry::vanilla_blocks;
     use steel_registry::RegistryExt;
+    use steel_registry::vanilla_blocks;
     use steel_utils::BlockPos;
 
     #[test]
@@ -406,8 +406,7 @@ mod tests {
                 .binary_search(&biome.key.to_string())
                 .expect("every registered biome key must be in the sorted list");
             assert_eq!(
-                translation[id] as usize,
-                expected,
+                translation[id] as usize, expected,
                 "biome {} must map to its alphabetical rank",
                 biome.key
             );
@@ -432,7 +431,8 @@ mod tests {
             for qy in 0..4 {
                 for qz in 0..4 {
                     for qx in 0..4 {
-                        let scrambled = ((qy as u16 + 1) * 17 + (qz as u16 + 1) * 5 + qx as u16) % n;
+                        let scrambled =
+                            ((qy as u16 + 1) * 17 + (qz as u16 + 1) * 5 + qx as u16) % n;
                         before.push(scrambled);
                         guard.biomes.set(qx, qy, qz, scrambled);
                     }
@@ -452,8 +452,7 @@ mod tests {
                     for qx in 0..4 {
                         let after = guard.biomes.get(qx, qy, qz);
                         assert_eq!(
-                            after,
-                            translation[before[idx] as usize],
+                            after, translation[before[idx] as usize],
                             "serialization must rewrite every biome cell to the alphabetical rank of its key"
                         );
                         idx += 1;

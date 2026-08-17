@@ -61,7 +61,7 @@ dir = "java-client"
 run = "gradle clean && rm -rf .gradle build"
 
 [tasks.clean]
-depends = ["clean-rust", "clean-java"]
+depends = ["clean-rust", "clean-java", "clean-bench"]
 
 [tasks.build-demo]
 usage = '''
@@ -117,3 +117,56 @@ run = "gradle publish -PreposiliteUsername=\"$REPOSILITE_USERNAME\" -Preposilite
 dir = "java-client"
 depends = ["build --release --static"]
 run = "gradle publishToMavenLocal"
+
+[tasks.steel-checkout]
+description = "Ensure a SteelMC checkout at the rev pinned in steel-provider/Cargo.toml exists with target/release/steel built"
+usage = '''
+flag "-f --force" default=#false help="Fetch origin even if HEAD already matches the pinned rev"
+'''
+env = { STEEL_URL = "https://github.com/Steel-Foundation/SteelMC" }
+dir = "."
+run = """
+set -euo pipefail
+
+REV="$(sed -n 's/.*rev = "\\([0-9a-f]\\{40\\}\\)".*/\\1/p' steel-provider/Cargo.toml | head -1)"
+[ -n "$REV" ] || { echo "error: no rev pin found in steel-provider/Cargo.toml" >&2; exit 1; }
+
+TARGET="${STEEL_REPO:-${PWD}/benchmark/.steel}"
+echo "==> Ensuring SteelMC checkout at $TARGET pinned to $REV"
+
+if [ ! -d "$TARGET/.git" ]; then
+  echo "==> Cloning $STEEL_URL"
+  mkdir -p "$(dirname "$TARGET")"
+  git clone "$STEEL_URL" "$TARGET"
+elif [ "$(git -C "$TARGET" rev-parse HEAD 2>/dev/null)" != "$REV" ] || [ "{{ usage.force }}" = true ]; then
+  echo "==> Fetching origin"
+  git -C "$TARGET" fetch origin
+fi
+
+# Guarantee the pinned rev's object is present, then check it out detached.
+if [ "$(git -C "$TARGET" rev-parse HEAD 2>/dev/null)" != "$REV" ]; then
+  git -C "$TARGET" fetch origin "$REV"
+  git -C "$TARGET" checkout --detach "$REV"
+fi
+
+echo "==> Building steel (release)"
+( cd "$TARGET" && cargo build --release -p steel )
+
+echo "==> Steel binary: $TARGET/target/release/steel (@ $(git -C "$TARGET" rev-parse --short HEAD))"
+"""
+
+[tasks.build-bench]
+description = "Compile the Rust benchmark harness (benchmark/)"
+dir = "benchmark"
+run = "cargo build --release"
+
+[tasks.clean-bench]
+run = "rm -rf benchmark/.fabric-cache benchmark/.fabric-server benchmark/results benchmark/target"
+
+[tasks.bench]
+description = "Run the full cold-world benchmark suite (Steel, Fabric, steel-provider, Minestom) and print a summary"
+depends = ["steel-checkout", "build-bench"]
+env = { PREGEN_WINDOW_SIZE = "64" }
+# Customize via env: PROFILE, SIDE, RUNS, WORKERS, STEEL_REPO, FABRIC_DIR,
+# OUTPUT, SAMPLE_MS, COOLDOWN (defaults in benchmark/src/main.rs).
+run = "benchmark/target/release/bench-tool"

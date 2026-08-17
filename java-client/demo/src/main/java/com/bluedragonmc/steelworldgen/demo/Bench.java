@@ -43,7 +43,7 @@ public class Bench {
     }
 
     /**
-     * Benchmark mode driven by the Steel benchmark harness (scripts/benchmarks/run.ts).
+     * Benchmark mode driven by the Steel benchmark harness (benchmark/ in this repo).
      * <p>
      * The harness sets {@code PREGEN_SIZE} to an odd square side length in chunks and
      * watches stdout for the same "Preparing spawn area" / "Spawn area prepared" markers
@@ -81,6 +81,9 @@ public class Bench {
 
         double elapsedSecs = (System.nanoTime() - start) / 1e9;
         double chunksPerSecond = total / elapsedSecs;
+
+        SteelWorldGenProvider.closeServer();
+
         System.out.printf("Spawn area prepared: %d chunks in %.2fs (%.1f chunks/s)%n",
                 total, elapsedSecs, chunksPerSecond);
         System.out.flush();
