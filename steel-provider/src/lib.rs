@@ -20,8 +20,8 @@ use steel_utils::types::{Difficulty, GameType};
 use steel_utils::{ChunkPos, Identifier};
 use steel_worldgen::biomes::BiomeSourceKind;
 
-mod batch;
-use batch::{BatchCoordinator, DriverSignal};
+mod requests;
+use requests::{DriverSignal, RequestCoordinator};
 
 /// The dimension a [`WorldgenContext`] generates chunks for.
 #[repr(u8)]
@@ -69,12 +69,10 @@ pub fn initialize() {
 ///
 /// Create one per seed and dimension and reuse it for all chunks in that world.
 pub struct WorldgenContext {
-    /// Coalesces concurrent per-chunk requests into single held requests.
-    /// Declared before `world` so its ticket handle is released while the
+    /// Issues concurrent per-chunk requests and retains their tickets.
+    /// Declared before `world` so its ticket handles are released while the
     /// world is still alive.
-    batch: Arc<BatchCoordinator>,
-    /// The batch-coordination worker thread (submit / poll / complete).
-    batch_worker: Option<std::thread::JoinHandle<()>>,
+    requests: Arc<RequestCoordinator>,
     world: Arc<World>,
     /// Kept alive so [`Drop`] can drain in-flight chunk-runtime tasks before
     /// the world is dropped.
@@ -95,8 +93,7 @@ impl WorldgenContext {
                 .num_threads(
                     std::thread::available_parallelism()
                         .map(|n| n.get())
-                        .unwrap_or(4)
-                        .min(16),
+                        .unwrap_or(4),
                 )
                 .thread_name(|i| format!("steelgen-{i}"))
                 .build()
@@ -187,12 +184,10 @@ impl WorldgenContext {
                 .expect("failed to spawn scheduling driver thread")
         };
 
-        let batch = BatchCoordinator::new(world.chunk_map.clone(), Arc::clone(&driver_signal));
-        let batch_worker = batch.spawn_worker();
+        let requests = RequestCoordinator::new(world.chunk_map.clone(), Arc::clone(&driver_signal));
 
         Self {
-            batch,
-            batch_worker: Some(batch_worker),
+            requests,
             world,
             runtime,
             driver: Some(driver),
@@ -214,11 +209,17 @@ impl WorldgenContext {
     #[must_use]
     pub fn generate_with_structures(&self, chunk_x: i32, chunk_z: i32) -> Chunk {
         let center = ChunkPos::new(chunk_x, chunk_z);
-        let holder = self.batch.request(center);
+        let holder = self.requests.request(center);
         let chunk = holder
             .try_chunk(ChunkStatus::Features)
             .expect("requested chunk must be at Features status");
+        self.clone_from_chunk(chunk, center)
+    }
 
+    /// Finalize and clone a chunk's sections out of the world into a fresh
+    /// [`Chunk`] backed by the same world.
+    #[must_use]
+    fn clone_from_chunk(&self, chunk: &Chunk, center: ChunkPos) -> Chunk {
         // Finalize before cloning so we copy compact palettes instead of
         // building-mode 8 KB cubes, and so recalculate_counts has no 4096-cell
         // scan to redo.
@@ -255,13 +256,10 @@ impl WorldgenContext {
 
 impl Drop for WorldgenContext {
     fn drop(&mut self) {
-        // Stop the batch worker and driver, then drain in-flight chunk-runtime
-        // tasks while the world is still alive (steel-core's generator context
-        // panics if a task runs after its world has been dropped).
-        self.batch.stop();
-        if let Some(worker) = self.batch_worker.take() {
-            let _ = worker.join();
-        }
+        // Stop the scheduling driver, then drain in-flight chunk-runtime tasks
+        // while the world is still alive (steel-core's generator context panics
+        // if a task runs after its world has been dropped). Retained request
+        // tickets are released when `requests` drops after this body.
         self.driver_stop.store(true, Ordering::Release);
         if let Some(driver) = self.driver.take() {
             let _ = driver.join();
