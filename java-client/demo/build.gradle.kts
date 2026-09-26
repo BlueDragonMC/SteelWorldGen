@@ -47,3 +47,7 @@ tasks.shadowJar {
 application {
     mainClass.set("com.bluedragonmc.steelworldgen.demo.Main")
 }
+
+tasks.run {
+    jvmArgs("-Dminestom.chunk-view-distance=16")
+}
