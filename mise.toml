@@ -24,33 +24,15 @@ cargo build{{ ' --release' if usage.release else '' }}
 {% endif %}
 """
 
-[tasks.copy-binary]
-usage = '''
-flag "-r --release" default=#false help="Copy the release steel-provider executable to the Java resources"
-flag "-s --static" default=#false help="Copy the statically linked musl executable"
-'''
-outputs = []
-depends = ["compile-rust{{ ' --release' if usage.release else '' }}{{ ' --static' if usage.static else '' }}"]
-run = """
-mkdir -p java-client/bridge/src/main/resources/native
-mkdir -p java-client/bridge/src/main/resources/META-INF
-PROFILE="{{ 'release' if usage.release else 'debug' }}"
-TARGET_DIR="{{ 'target/x86_64-unknown-linux-musl' if usage.static else 'target' }}"
-cp -fv "steel-provider/${TARGET_DIR}/${PROFILE}/steel-provider" java-client/bridge/src/main/resources/native/steel-provider
-cp -fv "steel-provider/LICENSE-AGPL" java-client/bridge/src/main/resources/META-INF/LICENSE-AGPL.txt
-cp -fv "LICENSE-Apache-2.0" java-client/bridge/src/main/resources/META-INF/LICENSE-Apache-2.0.txt
-chmod +x java-client/bridge/src/main/resources/native/steel-provider
-"""
-
 [tasks.build]
 #sources = ["java-client/bridge/**/*", "java-client/minestom/**/*", "java-client/demo/**/*", "java-client/gradlew", "java-client/gradlew.bat", "java-client/gradle.properties", "java-client/settings.gradle.kts", "java-client/gradle/**/*"]
 usage = '''
 flag "-r --release" default=#false help="Build with the Rust binary compiled in release mode"
 flag "-s --static" default=#false help="Bundle the statically linked musl binary"
 '''
-depends = ["copy-binary{{ ' --release' if usage.release else '' }}{{ ' --static' if usage.static else '' }}"]
+depends = ["compile-rust{{ ' --release' if usage.release else '' }}{{ ' --static' if usage.static else '' }}"]
 dir = "java-client"
-run = "gradle build -x test"
+run = "gradle build -x test -PsteelProvider=../steel-provider/{{ 'target/x86_64-unknown-linux-musl' if usage.static else 'target' }}/{{ 'release' if usage.release else 'debug' }}/steel-provider"
 
 [tasks.clean-rust]
 dir = "steel-provider"
@@ -67,18 +49,18 @@ depends = ["clean-rust", "clean-java", "clean-bench"]
 usage = '''
 flag "-s --static" default=#false help="Bundle the statically linked musl binary"
 '''
-depends = ["copy-binary{{ ' --static' if usage.static else '' }}"]
+depends = ["compile-rust{{ ' --static' if usage.static else '' }}"]
 dir = "java-client"
-run = "gradle :demo:build"
+run = "gradle :demo:build -PsteelProvider=../steel-provider/{{ 'target/x86_64-unknown-linux-musl' if usage.static else 'target' }}/debug/steel-provider"
 
 [tasks.demo]
 usage = '''
 flag "-r --release" default=#false help="Run the demo against the release binary"
 flag "-s --static" default=#false help="Use the statically linked musl binary"
 '''
-depends = ["copy-binary{{ ' --release' if usage.release else '' }}{{ ' --static' if usage.static else '' }}"]
+depends = ["compile-rust{{ ' --release' if usage.release else '' }}{{ ' --static' if usage.static else '' }}"]
 dir = "java-client"
-run = "gradle :demo:run"
+run = "gradle :demo:run -PsteelProvider=../steel-provider/{{ 'target/x86_64-unknown-linux-musl' if usage.static else 'target' }}/{{ 'release' if usage.release else 'debug' }}/steel-provider"
 
 [tasks.test-rust]
 usage = '''
@@ -96,9 +78,9 @@ flag "-r --release" default=#false help="Run the Java tests against the release 
 flag "-s --static" default=#false help="Test against the statically linked musl binary"
 '''
 outputs = []
-depends = ["copy-binary{{ ' --release' if usage.release else '' }}{{ ' --static' if usage.static else '' }}"]
+depends = ["compile-rust{{ ' --release' if usage.release else '' }}{{ ' --static' if usage.static else '' }}"]
 dir = "java-client"
-run = "gradle test"
+run = "gradle test -PsteelProvider=../steel-provider/{{ 'target/x86_64-unknown-linux-musl' if usage.static else 'target' }}/{{ 'release' if usage.release else 'debug' }}/steel-provider"
 
 [tasks.test]
 usage = '''
@@ -111,12 +93,12 @@ depends_post = ["test-java{{ ' --release' if usage.release else '' }}{{ ' --stat
 [tasks.publish]
 dir = "java-client"
 depends = ["build --release --static"]
-run = "gradle publish -PreposiliteUsername=\"$REPOSILITE_USERNAME\" -PreposilitePassword=\"$REPOSILITE_TOKEN\""
+run = "gradle publish -PsteelProvider=../steel-provider/target/x86_64-unknown-linux-musl/release/steel-provider -PreposiliteUsername=\"$REPOSILITE_USERNAME\" -PreposilitePassword=\"$REPOSILITE_TOKEN\""
 
 [tasks.publishToMavenLocal]
 dir = "java-client"
 depends = ["build --release --static"]
-run = "gradle publishToMavenLocal"
+run = "gradle publishToMavenLocal -PsteelProvider=../steel-provider/target/x86_64-unknown-linux-musl/release/steel-provider"
 
 [tasks.steel-checkout]
 description = "Ensure a SteelMC checkout at the rev pinned in steel-provider/Cargo.toml exists with target/release/steel built"

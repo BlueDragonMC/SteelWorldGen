@@ -50,16 +50,14 @@ publishing {
             pom {
                 licenses {
                     license {
-                        name = "Apache License, Version 2.0"
-                        url = "https://www.apache.org/licenses/LICENSE-2.0.txt"
-                        distribution = "repo"
-                    }
-                    if (project.name == "bridge") {
-                        license {
+                        if (project.name == "native") {
                             name = "GNU Affero General Public License, Version 3"
                             url = "https://www.gnu.org/licenses/agpl-3.0.txt"
-                            distribution = "repo"
+                        } else {
+                            name = "Apache License, Version 2.0"
+                            url = "https://www.apache.org/licenses/LICENSE-2.0.txt"
                         }
+                        distribution = "repo"
                     }
                 }
             }

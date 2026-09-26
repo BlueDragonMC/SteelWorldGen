@@ -19,6 +19,33 @@ public class SteelWorldGenProvider {
         }
     }
 
+    public static void useServer(String endpoint) {
+        synchronized (lock) {
+            closeServer();
+            try {
+                server = new SteelWorldGenServer(endpoint);
+            } catch (Exception e) {
+                throw new RuntimeException(
+                        "Failed to connect to steel-provider server at " + endpoint, e);
+            }
+        }
+    }
+
+    /**
+     * Registers an existing {@link SteelWorldGenServer}. Ownership transfers to
+     * this provider, which closes it when {@link #closeServer()} is called.
+     *
+     * <p>Replaces any previously registered server, closing it first.
+     *
+     * @param server the server to use
+     */
+    public static void setServer(SteelWorldGenServer server) {
+        synchronized (lock) {
+            closeServer();
+            SteelWorldGenProvider.server = server;
+        }
+    }
+
     /**
      * Returns an overworld chunk generator for the given seed. Shorthand for
      * {@code getGenerator(seed, Dimension.OVERWORLD)}.

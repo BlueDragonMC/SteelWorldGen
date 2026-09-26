@@ -4,5 +4,6 @@ plugins {
 
 rootProject.name = "steel-worldgen-client"
 include("bridge")
+include("native")
 include("minestom")
 include("demo")

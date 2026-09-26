@@ -1,0 +1,14 @@
+SteelWorldGen native provider
+
+This artifact contains a compiled executable at native/steel-provider. It was
+compiled from AGPL-3.0-licensed software: the steel-provider Rust crate in this
+project and the SteelMC library it links against.
+
+The executable is therefore licensed under the GNU Affero General Public
+License, Version 3, and all source code it was compiled from is available from
+https://github.com/BlueDragonMC/SteelWorldGen (steel-provider/) and
+https://github.com/Steel-Foundation/SteelMC.
+
+The full license text is included in this artifact at
+META-INF/LICENSE-AGPL.txt and is also available at
+https://www.gnu.org/licenses/agpl-3.0.txt.

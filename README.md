@@ -16,7 +16,12 @@ _\* The Java libraries in this repo are Apache-2.0, but SteelMC itself is licens
 
 `steel-provider/src/lib.rs` contains some functions that interact with SteelMC to bring chunks through the full generation process outside of a normal server environment. Those functions are compiled into a standalone executable (`steel-provider/src/main.rs`), which acts as a "dumb" server that exclusively handles chunk generation.
 
-The Java side is split into two modules in `java-client`: the `bridge` module is a standalone client library that connects to the steel-provider server, and the `minestom` module adapts it into a Minestom world generator. Each `Generator#generate()` call sends a small packet with the seed and chunk coordinates and then reads a response containing the generated chunk's sections in Minecraft's own network format.
+The Java side is split into three modules in `java-client`: 
+1. the `native` module packages the AGPL-3.0 `steel-provider` executable,
+2. the `bridge` module is a standalone Apache-2.0 client library that connects to the steel-provider server, and
+3. the `minestom` module adapts it into a Minestom world generator. `bridge` depends on `native` at runtime so the embedded server works out of the box.
+
+Each `Generator#generate()` call sends a small packet with the seed and chunk coordinates and then reads a response containing the generated chunk's sections in Minecraft's own network format.
 
 The server can be used standalone. Currently, only a Java client exists, but other clients could easily be made as long as they understand how to decode the data structures in Minecraft's chunk data packet. For more details on the protocol, see [steel-provider/PROTOCOL.md](steel-provider/PROTOCOL.md).
 
