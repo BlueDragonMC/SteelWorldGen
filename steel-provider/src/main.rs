@@ -101,29 +101,24 @@ fn serve(listener: Listener, description: String, _socket_file: Option<SocketFil
 /// Get (or create) the shared [`WorldgenContext`] for the given seed and
 /// dimension, updating its last-used time.
 ///
-/// Creation happens outside the lock so a slow first-time world setup doesn't
-/// block lookups of already-initialized pairs. If two connections race to
-/// create the same (seed, dimension), the loser is discarded.
+/// Creation holds the cache lock so a burst of first requests for the same
+/// `(seed, dimension)` builds a single context instead of one per connection
+/// (each context owns a Tokio runtime, a rayon pool, and a driver thread, so a
+/// thundering herd is very expensive).
 fn get_or_create_context(
     cache: &Arc<ContextCache>,
     seed: u64,
     dimension: Dimension,
 ) -> Arc<WorldgenContext> {
-    {
-        let mut cache = cache.lock().unwrap();
-        if let Some((ctx, last_used)) = cache.get_mut(&(seed, dimension)) {
-            *last_used = Instant::now();
-            return Arc::clone(ctx);
-        }
+    let mut cache = cache.lock().unwrap();
+    if let Some((ctx, last_used)) = cache.get_mut(&(seed, dimension)) {
+        *last_used = Instant::now();
+        return Arc::clone(ctx);
     }
 
     let ctx = Arc::new(WorldgenContext::new(seed, dimension));
-    let mut cache = cache.lock().unwrap();
-    cache
-        .entry((seed, dimension))
-        .or_insert_with(|| (Arc::clone(&ctx), Instant::now()))
-        .0
-        .clone()
+    cache.insert((seed, dimension), (Arc::clone(&ctx), Instant::now()));
+    ctx
 }
 
 /// Periodically evict contexts that have not been used recently.
