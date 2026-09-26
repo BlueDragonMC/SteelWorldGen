@@ -23,11 +23,10 @@ depends = ["minecraft-data"]
 outputs = []
 dir = "steel-provider"
 run = """
-set -euo pipefail
+set -eu
 # Data-jar paths resolved by `minecraft-data` (block/biome registry data).
-set -a
 . ../java-client/minestom/build/minecraft-data.env
-set +a
+export MINESTOM_DATA_FROM_JAR MINESTOM_DATA_TO_JAR
 {% if usage.static %}
 cargo zigbuild{{ ' --release' if usage.release else '' }} --target x86_64-unknown-linux-musl
 {% else %}
@@ -128,7 +127,7 @@ flag "-f --force" default=#false help="Fetch origin even if HEAD already matches
 env = { STEEL_URL = "https://github.com/Steel-Foundation/SteelMC" }
 dir = "."
 run = """
-set -euo pipefail
+set -eu
 
 REV="$(sed -n 's/.*rev = "\\([0-9a-f]\\{40\\}\\)".*/\\1/p' steel-provider/Cargo.toml | head -1)"
 [ -n "$REV" ] || { echo "error: no rev pin found in steel-provider/Cargo.toml" >&2; exit 1; }
