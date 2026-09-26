@@ -109,11 +109,7 @@ pub fn download(url: &str, dest: &Path, expected: &str) -> Result<(), String> {
 /// Kernel tick rate (CLK_TCK), used to convert /proc/<pid>/stat CPU fields.
 pub fn clock_ticks() -> f64 {
     let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
-    if ticks > 0 {
-        ticks as f64
-    } else {
-        100.0
-    }
+    if ticks > 0 { ticks as f64 } else { 100.0 }
 }
 
 fn format_utc_rfc3339(secs: i64) -> String {
@@ -159,13 +155,8 @@ fn cstr(bytes: &[libc::c_char]) -> String {
     while end < bytes.len() && bytes[end] != 0 {
         end += 1;
     }
-    String::from_utf8_lossy(
-        &bytes[..end]
-            .iter()
-            .map(|&c| c as u8)
-            .collect::<Vec<u8>>(),
-    )
-    .into_owned()
+    String::from_utf8_lossy(&bytes[..end].iter().map(|&c| c as u8).collect::<Vec<u8>>())
+        .into_owned()
 }
 
 /// `uname(2)` without shelling out to the `uname` binary.
@@ -235,11 +226,12 @@ pub fn collect_processes(pid: u32) -> Vec<u32> {
     let mut out = vec![pid];
     let mut stack = children_of(pid);
     while let Some(p) = stack.pop() {
+        if out.contains(&p) {
+            continue;
+        }
+        out.push(p);
         for kid in children_of(p) {
-            if !out.contains(&kid) {
-                out.push(kid);
-                stack.push(kid);
-            }
+            stack.push(kid);
         }
     }
     out

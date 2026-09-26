@@ -97,7 +97,7 @@ public final class SteelWorldGenServer implements AutoCloseable {
             waitForSocket();
         }
 
-        int poolSize = Math.max(2, Math.min(Runtime.getRuntime().availableProcessors() * 2, 32));
+        int poolSize = Math.max(2, Math.min(Runtime.getRuntime().availableProcessors() * 3, 64));
         this.connections = new ConnectionPool(poolSize, this::connect);
 
         if (ownsProcess) {

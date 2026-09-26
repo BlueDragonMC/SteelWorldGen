@@ -477,6 +477,14 @@ pub fn run_trial(
     // (taken ≤ sample_ms earlier, while the provider was still running) is used
     // as the end edge so its CPU is not lost from the average.
     let mut last_cpu: Option<f64> = None;
+    // Cumulative CPU only grows, so the end edge is the larger of the final
+    // aggregate and the last periodic sample. Preferring the aggregate alone
+    // would drop the Minestom provider child, which is already gone at the end.
+    let end_cpu_of =
+        |s: &Option<Sample>, last: Option<f64>| match (s.as_ref().map(|x| x.cpu_seconds), last) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        };
     let mut peak_rss: u64 = 0;
     let mut reported_chunks: Option<u64> = None;
     let mut reported_seconds: Option<f64> = None;
@@ -541,7 +549,7 @@ pub fn run_trial(
                     let now = Instant::now();
                     benchmark_end = Some(now);
                     let s = aggregate(pid, ticks);
-                    end_cpu = s.as_ref().map(|x| x.cpu_seconds).or(last_cpu);
+                    end_cpu = end_cpu_of(&s, last_cpu);
                     if let Some((c, cps)) = parse_progress(&clean) {
                         reported_chunks = Some(c);
                         reported_cps = Some(cps);
@@ -562,7 +570,7 @@ pub fn run_trial(
                     let now = Instant::now();
                     benchmark_end = Some(now);
                     let s = aggregate(pid, ticks);
-                    end_cpu = s.as_ref().map(|x| x.cpu_seconds).or(last_cpu);
+                    end_cpu = end_cpu_of(&s, last_cpu);
                     reported_chunks = Some(chunks);
                     reported_seconds = Some(secs);
                     reported_cps = Some(cps);

@@ -14,7 +14,7 @@
 //!   PROFILE      all, steel, fabric, steel-provider, minestom, steel-minestom [all]
 //!   SIDE         square side in chunks [101]
 //!   RUNS         trials per server [3]
-//!   WORKERS      concurrent steel-provider callers [32]
+//!   WORKERS      concurrent steel-provider callers [3x logical CPUs]
 //!   OUTPUT       results directory [benchmark/results]
 //!   SAMPLE_MS    /proc sampling interval [250]
 //!   COOLDOWN     seconds between trials [5]
@@ -57,7 +57,7 @@ fn run() -> Result<(), String> {
     let runs: u32 = env_or("RUNS", "3")
         .parse()
         .map_err(|_| "RUNS must be an integer".to_string())?;
-    let workers: u32 = env_or("WORKERS", "32")
+    let workers: u32 = env_or("WORKERS", &(util::logical_cpus() * 3).to_string())
         .parse()
         .map_err(|_| "WORKERS must be an integer".to_string())?;
     let sample_ms: u64 = env_or("SAMPLE_MS", "250")

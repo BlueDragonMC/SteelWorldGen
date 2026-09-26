@@ -51,7 +51,11 @@ pub fn provision(fdir: &Path) -> Result<(), String> {
     let installer = cache.join(artifact::INSTALLER.filename);
     if !installer.exists() {
         println!("==> Downloading {}", artifact::INSTALLER.filename);
-        util::download(artifact::INSTALLER.url, &installer, artifact::INSTALLER.sha512)?;
+        util::download(
+            artifact::INSTALLER.url,
+            &installer,
+            artifact::INSTALLER.sha512,
+        )?;
     }
 
     if !fdir.join("fabric-server-launch.jar").exists() {

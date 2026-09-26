@@ -67,8 +67,9 @@ fn main() {
                 }
                 let (x, z) = work[i];
                 let chunk = ctx.generate_with_structures(x, z);
+                let data = steel_provider::serialize_chunk_sections(&chunk);
                 assert!(
-                    !chunk.sections().sections.is_empty(),
+                    !chunk.sections().sections.is_empty() && !data.is_empty(),
                     "chunk ({x},{z}) must generate sections"
                 );
                 done += 1;
@@ -89,7 +90,11 @@ fn main() {
     );
     let _ = std::io::stdout().flush();
 
-    // Stay alive like a server until the harness sends SIGTERM.
+    // Stay alive like a server until the harness sends SIGTERM, unless a caller
+    // asked for a one-shot run (used by profiling tools).
+    if std::env::var_os("BENCH_EXIT_AFTER").is_some() {
+        return;
+    }
     loop {
         std::thread::sleep(std::time::Duration::from_secs(60));
     }
@@ -100,9 +105,10 @@ fn env_or(key: &str, default: &str) -> String {
 }
 
 fn default_workers() -> usize {
-    std::thread::available_parallelism()
+    let cpus = std::thread::available_parallelism()
         .map(|n| n.get())
-        .unwrap_or(4)
+        .unwrap_or(4);
+    (cpus * 3).max(2)
 }
 
 unsafe extern "C" fn handle_sigterm(_signal: std::os::raw::c_int) {

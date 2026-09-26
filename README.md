@@ -80,18 +80,16 @@ Chunk generation gets MUCH faster at the expense of a longer compilation time.
 
 ## Performance
 
-This project generates chunks much faster than vanilla Minecraft, but much slower than SteelMC. `steel-provider` itself (the Rust side of this project) is slower than standalone Steel because it needs to account for a different access pattern (Steel knows the entire set of chunks that need to be generated at once, while Minestom world generators only receive requests one chunk at a time). Then, when using it from Minestom, the networking and conversion add an additional performance penalty.
+This project generates chunks much faster than vanilla Minecraft, but slower than a regular SteelMC server. `steel-provider` itself (the Rust side of this project) reaches almost the same throughput as standalone SteelMC when it is given enough concurrent requests. However, when using it from Minestom, the networking and conversion come with a performance penalty.
 
-On my machine, I can generate:
+On my ThinkPad P1 Gen 6 laptop with an Intel Core i7-13800H (20 logical CPU cores), I can generate:
 
-- Steel: 877 chunks/second
-- Fabric: 76 chunks/second
-- steel-provider (my Steel wrapper): 465 chunks/second
-- steel-provider + Minestom world generator wrapper: 215 chunks/second
+- Steel: 908 chunks/second
+- Fabric: 86 chunks/second
+- steel-provider (my Steel wrapper): 854 chunks/second
+- steel-provider + Minestom world generator wrapper: 494 chunks/second
 
-Most of this difference seems to be that Steel is better than steel-provider at spreading work across more available CPU cores.
-
-Reproduce the benchmarks yourself using `mise run bench`. It takes me about 12 minutes to run all 3 trials.
+Reproduce the benchmarks yourself using `mise run bench`. It takes me about 10 minutes to run all 3 trials.
 
 ### AI Disclosure
 
