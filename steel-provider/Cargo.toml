@@ -6,10 +6,10 @@ edition = "2024"
 [dependencies]
 libc = "0.2.177"
 rayon = "1.12.0"
-steel-core = { git = "https://github.com/Steel-Foundation/SteelMC", rev = "a6213a682f2b7a727c3205d0f7fd63628acb3fd5" }
-steel-worldgen = { git = "https://github.com/Steel-Foundation/SteelMC", rev = "a6213a682f2b7a727c3205d0f7fd63628acb3fd5" }
-steel-registry = { git = "https://github.com/Steel-Foundation/SteelMC", rev = "a6213a682f2b7a727c3205d0f7fd63628acb3fd5" }
-steel-utils = { git = "https://github.com/Steel-Foundation/SteelMC", rev = "a6213a682f2b7a727c3205d0f7fd63628acb3fd5" }
-steel-protocol = { git = "https://github.com/Steel-Foundation/SteelMC", rev = "a6213a682f2b7a727c3205d0f7fd63628acb3fd5" }
+steel-core = { git = "https://github.com/Steel-Foundation/SteelMC", rev = "9142c96cfe72441c6050d98800cbb395dc92e964" }
+steel-worldgen = { git = "https://github.com/Steel-Foundation/SteelMC", rev = "9142c96cfe72441c6050d98800cbb395dc92e964" }
+steel-registry = { git = "https://github.com/Steel-Foundation/SteelMC", rev = "9142c96cfe72441c6050d98800cbb395dc92e964" }
+steel-utils = { git = "https://github.com/Steel-Foundation/SteelMC", rev = "9142c96cfe72441c6050d98800cbb395dc92e964" }
+steel-protocol = { git = "https://github.com/Steel-Foundation/SteelMC", rev = "9142c96cfe72441c6050d98800cbb395dc92e964" }
 tokio = "1.53.1"
 toml = "1.1.4"

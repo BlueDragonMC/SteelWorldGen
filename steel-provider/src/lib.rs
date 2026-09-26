@@ -11,7 +11,7 @@ use steel_core::chunk::Chunk;
 use steel_core::chunk::section::{ChunkSection, SectionHolder, Sections};
 use steel_core::chunk::status::ChunkStatus;
 use steel_core::entity::init_entities;
-use steel_core::level_data::WorldGenerationSettings;
+use steel_core::level_data::{GameTimeSource, WorldGenerationSettings};
 use steel_core::world::{World, WorldConfig, WorldStorageConfig};
 use steel_core::worldgen::{ChunkGeneratorType, EndGenerator, NetherGenerator, OverworldGenerator};
 use steel_registry::vanilla_dimension_types;
@@ -146,6 +146,7 @@ impl WorldgenContext {
                 dim_type,
                 seed as i64,
                 WorldConfig {
+                    game_time_source: GameTimeSource::Primary,
                     storage: WorldStorageConfig::RamOnly,
                     level_data_path: None,
                     generator: generator.clone(),
@@ -172,8 +173,10 @@ impl WorldgenContext {
             std::thread::Builder::new()
                 .name("steelgen-drive".into())
                 .spawn(move || {
+                    let mut tick_count = 0u64;
                     while !driver_stop.load(Ordering::Acquire) {
-                        world.chunk_map.advance_scheduling();
+                        world.chunk_map.tick_game(&world, tick_count, 0, false);
+                        tick_count = tick_count.wrapping_add(1);
                         if signal.idle() {
                             signal.wait(Duration::from_millis(100));
                         } else {

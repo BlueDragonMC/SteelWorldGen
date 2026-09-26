@@ -5,7 +5,7 @@ lockfile = true
 "cargo:cargo-zigbuild" = "0.23.0"
 gradle = "9.6"
 java = "25"
-rust = { version = "nightly-2026-07-23", targets = ["x86_64-unknown-linux-musl"] }
+rust = { version = "nightly-2026-08-21", targets = ["x86_64-unknown-linux-musl"] }
 zig = "0.16.0"
 
 [tasks.compile-rust]
