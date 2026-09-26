@@ -1,6 +1,6 @@
 use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Once, OnceLock};
+use std::sync::{Arc, Once};
 use std::time::Duration;
 
 use rayon::ThreadPoolBuilder;
@@ -17,8 +17,17 @@ use steel_core::worldgen::{ChunkGeneratorType, EndGenerator, NetherGenerator, Ov
 use steel_registry::vanilla_dimension_types;
 use steel_registry::{REGISTRY, Registry};
 use steel_utils::types::{Difficulty, GameType};
-use steel_utils::{ChunkPos, Identifier};
+use steel_utils::{BlockStateId, ChunkPos, Identifier};
 use steel_worldgen::biomes::BiomeSourceKind;
+
+mod generated {
+    //! Translation tables generated at build time by `build.rs`.
+    //!
+    //! These tables map SteelMC registry IDs to the client's IDs in case the two data versions are different.
+
+    include!(concat!(env!("OUT_DIR"), "/block_state_translation.rs"));
+    include!(concat!(env!("OUT_DIR"), "/biome_translation.rs"));
+}
 
 mod requests;
 use requests::{DriverSignal, RequestCoordinator};
@@ -273,27 +282,15 @@ impl Drop for WorldgenContext {
     }
 }
 
-/// Maps SteelMC's biome registry IDs to a canonical alphabetical ordering of
-/// biome keys.
-static BIOME_TRANSLATION: OnceLock<Vec<u16>> = OnceLock::new();
-
-/// Returns `translation` where `translation[steel_biome_id]` is the
-/// alphabetical rank of that biome's key (0-based, all biomes sorted by
-/// `namespace:path`). Requires [`initialize`] to have run.
+/// Returns `translation` where `translation[steel_biome_id]` is the index of
+/// that biome in the alphabetically sorted key list of the *target* Minecraft
+/// data version (see [`generated::BIOME_TRANSLATION`]).
+///
+/// The target data version may contain biomes the pinned SteelMC does not know
+/// about, so this cannot be computed from SteelMC's registry alone.
 #[must_use]
 pub fn biome_translation() -> &'static [u16] {
-    BIOME_TRANSLATION.get_or_init(|| {
-        let biomes = REGISTRY.biomes.iter();
-        let mut entries: Vec<(String, usize)> = biomes
-            .map(|(id, biome)| (biome.key.to_string(), id))
-            .collect();
-        entries.sort_by(|a, b| a.0.cmp(&b.0));
-        let mut translation = vec![0u16; entries.len()];
-        for (rank, (_, id)) in entries.into_iter().enumerate() {
-            translation[id] = rank as u16;
-        }
-        translation
-    })
+    &generated::BIOME_TRANSLATION
 }
 
 /// Rewrites a section's biome palette so every biome ID is the alphabetical
@@ -313,6 +310,29 @@ fn remap_biomes(section: &SectionHolder, translation: &[u16]) {
     guard.biomes.finalize_building();
 }
 
+/// Rewrites a section's block-state palette so every state ID is translated
+/// from the pinned SteelMC registry to the target Minecraft version's registry
+/// (see [`generated::block_state_translation`]).
+///
+/// SteelMC is built against an older data version than the client, so a raw
+/// SteelMC state ID would be misinterpreted by the client's block registry.
+/// Entering building mode gives us a flat `[BlockStateId]` cube to map in
+/// place, which is cheaper than reading and re-setting each cell.
+fn remap_block_states(section: &SectionHolder) {
+    let translation = &generated::BLOCK_STATE_TRANSLATION;
+    let mut guard = section.write();
+    guard.states.finalize_building();
+    guard.states.enter_building_mode();
+    let Some(cube) = guard.states.as_building_slice_mut() else {
+        return;
+    };
+    for state in cube.iter_mut() {
+        let translated = translation[state.0 as usize];
+        *state = BlockStateId(translated);
+    }
+    guard.states.finalize_building();
+}
+
 /// Finalizes every section of `chunk` (block states and biomes) so palettes are
 /// compact rather than building-mode 8 KB cubes. Idempotent — no-op on sections
 /// that are already finalized.
@@ -328,8 +348,11 @@ fn finalize_sections(chunk: &Chunk) {
 /// section byte stream a client-side `ChunkData.Section` reader consumes.
 ///
 /// Each section is finalized (a no-op when already compact) and its counters
-/// recounted before writing. Biome IDs are normalized to alphabetical key order
-/// (see [`biome_translation`]), making the output identical across builds.
+/// recounted before writing. Block-state IDs are translated from the pinned
+/// SteelMC registry to the target Minecraft version (see
+/// [`generated::block_state_translation`]) and biome IDs are normalized to
+/// alphabetical key order (see [`biome_translation`]), making the output
+/// identical across builds and independent of SteelMC's data version.
 #[must_use]
 pub fn serialize_chunk_sections(chunk: &Chunk) -> Vec<u8> {
     let translation = biome_translation();
@@ -341,6 +364,7 @@ pub fn serialize_chunk_sections(chunk: &Chunk) -> Vec<u8> {
             guard.biomes.finalize_building();
             guard.recalculate_counts();
         }
+        remap_block_states(section);
         remap_biomes(section, translation);
         section.read().write(&mut cursor);
     }
@@ -434,32 +458,25 @@ mod tests {
         let len = REGISTRY.biomes.len();
         assert_eq!(translation.len(), len);
 
-        // The translation must be a bijection (each rank used exactly once),
-        // so every SteelMC biome ID round-trips to exactly one canonical ID.
-        let mut seen = vec![false; len];
-        for &rank in translation {
-            let rank = rank as usize;
-            assert!(rank < len, "rank {rank} out of range for {len} biomes");
-            assert!(!seen[rank], "rank {rank} assigned to multiple biome IDs");
-            seen[rank] = true;
-        }
-
-        // Every SteelMC biome ID must map to the alphabetical rank of its key.
-        let mut keys: Vec<String> = REGISTRY
-            .biomes
-            .iter()
-            .map(|(_, biome)| biome.key.to_string())
-            .collect();
-        keys.sort();
+        // SteelMC registers biomes in alphabetical key order, so its biome IDs
+        // already ascend alphabetically. The target version's biome set is a
+        // superset sorted the same way, so the translation must be a strictly
+        // increasing sequence: biome names keep their relative order.
+        let mut previous: Option<(u16, String)> = None;
         for (id, biome) in REGISTRY.biomes.iter() {
-            let expected = keys
-                .binary_search(&biome.key.to_string())
-                .expect("every registered biome key must be in the sorted list");
-            assert_eq!(
-                translation[id] as usize, expected,
-                "biome {} must map to its alphabetical rank",
-                biome.key
-            );
+            let key = biome.key.to_string();
+            let rank = translation[id];
+            if let Some((previous_rank, previous_key)) = &previous {
+                assert!(
+                    *previous_key < key,
+                    "SteelMC biome IDs must be alphabetical"
+                );
+                assert!(
+                    rank > *previous_rank,
+                    "biome {key} must sort after {previous_key} in the target set"
+                );
+            }
+            previous = Some((rank, key));
         }
     }
 

@@ -11,6 +11,14 @@ group = "com.bluedragonmc"
 repositories {
     mavenLocal()
     mavenCentral()
+    maven(url = "https://central.sonatype.com/repository/maven-snapshots/") {
+        content {
+            includeModule("net.minestom", "minestom")
+            includeModule("net.minestom", "testing")
+            includeModule("net.minestom", "data")
+        }
+    }
+    maven(url = "https://reposilite.bluedragonmc.com/releases")
 }
 
 testing {

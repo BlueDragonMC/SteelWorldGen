@@ -1,6 +1,11 @@
 [settings]
 lockfile = true
 
+# The Minestom `data` version the pinned SteelMC (Cargo.toml) is built against.
+# When this version differs from the Minestom version, block state and biome IDs are converted before being sent over the wire.
+[vars]
+minecraft_data_from = "26.2-rv3"
+
 [tools]
 "cargo:cargo-zigbuild" = "0.23.0"
 gradle = "9.6"
@@ -14,15 +19,30 @@ usage = '''
 flag "-r --release" default=#false help="Compile the Rust crate in release mode"
 flag "-s --static" default=#false help="Cross-compile a statically linked x86_64-unknown-linux-musl binary"
 '''
+depends = ["minecraft-data"]
 outputs = []
 dir = "steel-provider"
 run = """
+set -euo pipefail
+# Data-jar paths resolved by `minecraft-data` (block/biome registry data).
+set -a
+. ../java-client/minestom/build/minecraft-data.env
+set +a
 {% if usage.static %}
 cargo zigbuild{{ ' --release' if usage.release else '' }} --target x86_64-unknown-linux-musl
 {% else %}
 cargo build{{ ' --release' if usage.release else '' }}
 {% endif %}
 """
+
+# Resolves the net.minestom:data jars that steel-provider's build script reads
+# its block and biome registries from, and writes their paths to
+# java-client/minestom/build/minecraft-data.env for `compile-rust`. Must run
+# before `compile-rust`.
+[tasks.minecraft-data]
+description = "Resolve net.minestom:data jars for the SteelMC and client data versions"
+dir = "java-client"
+run = "gradle :minestom:resolveMinecraftData --no-configuration-cache -PminecraftDataFromVersion={{ vars.minecraft_data_from }}"
 
 [tasks.build]
 #sources = ["java-client/bridge/**/*", "java-client/minestom/**/*", "java-client/demo/**/*", "java-client/gradlew", "java-client/gradlew.bat", "java-client/gradle.properties", "java-client/settings.gradle.kts", "java-client/gradle/**/*"]

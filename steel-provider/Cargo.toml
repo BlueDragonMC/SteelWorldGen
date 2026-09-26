@@ -13,3 +13,8 @@ steel-utils = { git = "https://github.com/Purdze/SteelMC", rev = "f55b7a913ed381
 steel-protocol = { git = "https://github.com/Purdze/SteelMC", rev = "f55b7a913ed3815171fd8dff109b3843bf8061ab" }
 tokio = "1.53.1"
 toml = "1.1.4"
+
+[build-dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+zip = "8.6.0"

@@ -1,5 +1,6 @@
 [versions]
-minestom = "2026.07.22-26.2"
+minestom = "26_3-SNAPSHOT"
 
 [libraries]
 minestom = { group = "net.minestom", name = "minestom", version.ref = "minestom" }
+minestom-testing = { group = "net.minestom", name = "testing", version.ref = "minestom" }
