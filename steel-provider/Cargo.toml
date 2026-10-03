@@ -6,11 +6,11 @@ edition = "2024"
 [dependencies]
 libc = "0.2.177"
 rayon = "1.12.0"
-steel-core = { git = "https://github.com/Purdze/SteelMC", rev = "f55b7a913ed3815171fd8dff109b3843bf8061ab" }
-steel-worldgen = { git = "https://github.com/Purdze/SteelMC", rev = "f55b7a913ed3815171fd8dff109b3843bf8061ab" }
-steel-registry = { git = "https://github.com/Purdze/SteelMC", rev = "f55b7a913ed3815171fd8dff109b3843bf8061ab" }
-steel-utils = { git = "https://github.com/Purdze/SteelMC", rev = "f55b7a913ed3815171fd8dff109b3843bf8061ab" }
-steel-protocol = { git = "https://github.com/Purdze/SteelMC", rev = "f55b7a913ed3815171fd8dff109b3843bf8061ab" }
+steel-core = { git = "https://github.com/Steel-Foundation/SteelMC", rev = "85c94494386ead8d1d33044a2b547d19feae9258" }
+steel-worldgen = { git = "https://github.com/Steel-Foundation/SteelMC", rev = "85c94494386ead8d1d33044a2b547d19feae9258" }
+steel-registry = { git = "https://github.com/Steel-Foundation/SteelMC", rev = "85c94494386ead8d1d33044a2b547d19feae9258" }
+steel-utils = { git = "https://github.com/Steel-Foundation/SteelMC", rev = "85c94494386ead8d1d33044a2b547d19feae9258" }
+steel-protocol = { git = "https://github.com/Steel-Foundation/SteelMC", rev = "85c94494386ead8d1d33044a2b547d19feae9258" }
 tokio = "1.53.1"
 toml = "1.1.4"
 
