@@ -2126,7 +2126,6 @@ dependencies = [
  "serde",
  "serde_json",
  "steel-core",
- "steel-protocol",
  "steel-registry",
  "steel-utils",
  "steel-worldgen",

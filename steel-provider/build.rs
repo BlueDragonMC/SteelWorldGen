@@ -78,8 +78,7 @@ fn write_table(path: &Path, header: &str, name: &str, values: &[u16]) {
     }
     out.push_str("];\n");
 
-    fs::write(path, out)
-        .unwrap_or_else(|e| panic!("failed to write {}: {e}", path.display()));
+    fs::write(path, out).unwrap_or_else(|e| panic!("failed to write {}: {e}", path.display()));
 }
 
 /// Maps each SteelMC (from) block-state ID to the corresponding (to) state ID.
@@ -135,9 +134,12 @@ fn biome_translation(from: &DataVersion, to: &DataVersion) -> Vec<u16> {
     from.biomes
         .iter()
         .map(|key| {
-            *to_ranks
-                .get(key.as_str())
-                .unwrap_or_else(|| panic!("biome {key} exists in {} but not in {}", from.version, to.version))
+            *to_ranks.get(key.as_str()).unwrap_or_else(|| {
+                panic!(
+                    "biome {key} exists in {} but not in {}",
+                    from.version, to.version
+                )
+            })
         })
         .collect()
 }
@@ -185,7 +187,8 @@ impl DataVersion {
             jar.display()
         );
 
-        let blocks: BTreeMap<String, BlockData> = read_jar_json(&jar, "net/minestom/data/block.json");
+        let blocks: BTreeMap<String, BlockData> =
+            read_jar_json(&jar, "net/minestom/data/block.json");
         let biomes_raw: BTreeMap<String, serde_json::Value> =
             read_jar_json(&jar, "net/minestom/data/worldgen/biome.json");
         let mut biomes: Vec<String> = biomes_raw.keys().cloned().collect();
@@ -205,7 +208,8 @@ impl DataVersion {
 
 /// Reads and deserializes a JSON entry from a zip/jar.
 fn read_jar_json<T: for<'de> Deserialize<'de>>(jar: &Path, entry: &str) -> T {
-    let file = fs::File::open(jar).unwrap_or_else(|e| panic!("failed to open {}: {e}", jar.display()));
+    let file =
+        fs::File::open(jar).unwrap_or_else(|e| panic!("failed to open {}: {e}", jar.display()));
     let mut archive = zip::ZipArchive::new(file)
         .unwrap_or_else(|e| panic!("failed to read zip {}: {e}", jar.display()));
     let mut entry_reader = archive
@@ -215,8 +219,7 @@ fn read_jar_json<T: for<'de> Deserialize<'de>>(jar: &Path, entry: &str) -> T {
     entry_reader
         .read_to_string(&mut contents)
         .unwrap_or_else(|e| panic!("failed to read {entry}: {e}"));
-    serde_json::from_str(&contents)
-        .unwrap_or_else(|e| panic!("failed to parse {entry}: {e}"))
+    serde_json::from_str(&contents).unwrap_or_else(|e| panic!("failed to parse {entry}: {e}"))
 }
 
 /// One block's states from `block.json`, keyed by property-state string.

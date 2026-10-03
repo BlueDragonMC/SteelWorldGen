@@ -13,9 +13,7 @@ use std::time::{Duration, Instant};
 
 use steel_core::chunk::chunk_holder::ChunkHolder;
 use steel_core::chunk::chunk_map::ChunkMap;
-use steel_core::chunk::chunk_request::{
-    ChunkRequest, ChunkRequestHandle, ChunkRequestState, ChunkTicketKind,
-};
+use steel_core::chunk::chunk_request::{ChunkRequestHandle, ChunkRequestState, ChunkTicketKind};
 use steel_core::chunk::status::ChunkStatus;
 use steel_utils::ChunkPos;
 
@@ -120,17 +118,12 @@ impl RequestCoordinator {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.inner.lock().unwrap().active.push((id, region));
 
-        let mut positions = Vec::with_capacity(9);
-        for dz in -1..=1 {
-            for dx in -1..=1 {
-                positions.push(ChunkPos::new(center.0.x + dx, center.0.y + dz));
-            }
-        }
-        let handle = self.chunk_map.request_chunks(ChunkRequest {
-            status: ChunkStatus::Features,
-            positions,
-            ticket_kind: ChunkTicketKind::Command,
-        });
+        let handle = self.chunk_map.request_square(
+            center,
+            1,
+            ChunkStatus::Features,
+            ChunkTicketKind::Command,
+        );
         if self.driver_signal.begin() {
             self.driver_signal.wake();
         }

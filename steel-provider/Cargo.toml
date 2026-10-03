@@ -10,7 +10,6 @@ steel-core = { git = "https://github.com/Steel-Foundation/SteelMC", rev = "85c94
 steel-worldgen = { git = "https://github.com/Steel-Foundation/SteelMC", rev = "85c94494386ead8d1d33044a2b547d19feae9258" }
 steel-registry = { git = "https://github.com/Steel-Foundation/SteelMC", rev = "85c94494386ead8d1d33044a2b547d19feae9258" }
 steel-utils = { git = "https://github.com/Steel-Foundation/SteelMC", rev = "85c94494386ead8d1d33044a2b547d19feae9258" }
-steel-protocol = { git = "https://github.com/Steel-Foundation/SteelMC", rev = "85c94494386ead8d1d33044a2b547d19feae9258" }
 tokio = "1.53.1"
 toml = "1.1.4"
 

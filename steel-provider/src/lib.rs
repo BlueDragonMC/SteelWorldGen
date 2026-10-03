@@ -8,6 +8,7 @@ use rayon::ThreadPoolBuilder;
 use steel_core::behavior::init_behaviors;
 use steel_core::block_entity::init_block_entities;
 use steel_core::chunk::Chunk;
+use steel_core::chunk::paletted_container::{BiomePalette, BlockPalette};
 use steel_core::chunk::section::{ChunkSection, SectionHolder, Sections};
 use steel_core::chunk::status::ChunkStatus;
 use steel_core::entity::init_entities;
@@ -229,21 +230,19 @@ impl WorldgenContext {
     /// [`Chunk`] backed by the same world.
     #[must_use]
     fn clone_from_chunk(&self, chunk: &Chunk, center: ChunkPos) -> Chunk {
-        // Finalize before cloning so we copy compact palettes instead of
-        // building-mode 8 KB cubes, and so recalculate_counts has no 4096-cell
-        // scan to redo.
-        finalize_sections(chunk);
-
         let min_y = chunk.min_y();
         let height = chunk.height();
 
-        // Clone sections out of the holder into a fresh Chunk.
+        // Finalize and clone each section under a single lock so the clone
+        // copies compact palettes instead of building-mode 8 KB cubes.
         let sections: Vec<ChunkSection> = chunk
             .sections()
             .sections
             .iter()
             .map(|s| {
-                let guard = s.read();
+                let mut guard = s.write();
+                guard.states.finalize_building();
+                guard.biomes.finalize_building();
                 let states = guard.states.clone();
                 let biomes = guard.biomes.clone();
                 drop(guard);
@@ -297,6 +296,16 @@ pub fn biome_translation() -> &'static [u16] {
 /// rank of its key (see [`biome_translation`]).
 fn remap_biomes(section: &SectionHolder, translation: &[u16]) {
     let mut guard = section.write();
+
+    // A homogeneous section has a single palette value, so remap it in O(1)
+    // rather than expanding to (and collapsing from) a 64-cell building cube.
+    if matches!(&guard.biomes, BiomePalette::Homogeneous(_)) {
+        if let BiomePalette::Homogeneous(biome) = &mut guard.biomes {
+            *biome = translation[*biome as usize];
+        }
+        return;
+    }
+
     guard.biomes.finalize_building();
     guard.biomes.enter_building_mode();
     for qy in 0..4 {
@@ -316,11 +325,20 @@ fn remap_biomes(section: &SectionHolder, translation: &[u16]) {
 ///
 /// SteelMC is built against an older data version than the client, so a raw
 /// SteelMC state ID would be misinterpreted by the client's block registry.
-/// Entering building mode gives us a flat `[BlockStateId]` cube to map in
-/// place, which is cheaper than reading and re-setting each cell.
+/// Heterogeneous palettes are mapped through a flat `[BlockStateId]` cube;
+/// homogeneous ones (air, stone, water, ...) map their single palette value
+/// directly instead of allocating and scanning 4096 cells.
 fn remap_block_states(section: &SectionHolder) {
     let translation = &generated::BLOCK_STATE_TRANSLATION;
     let mut guard = section.write();
+
+    if matches!(&guard.states, BlockPalette::Homogeneous(_)) {
+        if let BlockPalette::Homogeneous(state) = &mut guard.states {
+            *state = BlockStateId(translation[state.0 as usize]);
+        }
+        return;
+    }
+
     guard.states.finalize_building();
     guard.states.enter_building_mode();
     let Some(cube) = guard.states.as_building_slice_mut() else {
@@ -333,24 +351,13 @@ fn remap_block_states(section: &SectionHolder) {
     guard.states.finalize_building();
 }
 
-/// Finalizes every section of `chunk` (block states and biomes) so palettes are
-/// compact rather than building-mode 8 KB cubes. Idempotent — no-op on sections
-/// that are already finalized.
-fn finalize_sections(chunk: &Chunk) {
-    for section in &chunk.sections().sections {
-        let mut guard = section.write();
-        guard.states.finalize_building();
-        guard.biomes.finalize_building();
-    }
-}
-
 /// Serialize a chunk's sections (block states and biomes) into the raw network
 /// section byte stream a client-side `ChunkData.Section` reader consumes.
 ///
-/// Each section is finalized (a no-op when already compact) and its counters
-/// recounted before writing. Block-state IDs are translated from the pinned
-/// SteelMC registry to the target Minecraft version (see
-/// [`generated::block_state_translation`]) and biome IDs are normalized to
+/// Sections must already carry current counters; chunks from
+/// [`WorldgenContext::generate_with_structures`] do. Block-state IDs are
+/// translated from the pinned SteelMC registry to the target Minecraft version
+/// (see [`generated::block_state_translation`]) and biome IDs are normalized to
 /// alphabetical key order (see [`biome_translation`]), making the output
 /// identical across builds and independent of SteelMC's data version.
 #[must_use]
@@ -358,12 +365,8 @@ pub fn serialize_chunk_sections(chunk: &Chunk) -> Vec<u8> {
     let translation = biome_translation();
     let mut cursor = Cursor::new(Vec::new());
     for section in &chunk.sections().sections {
-        {
-            let mut guard = section.write();
-            guard.states.finalize_building();
-            guard.biomes.finalize_building();
-            guard.recalculate_counts();
-        }
+        // Remapping preserves air/fluid/ticking classification, so the cached
+        // counters stay valid; the remap helpers finalize palettes defensively.
         remap_block_states(section);
         remap_biomes(section, translation);
         section.read().write(&mut cursor);

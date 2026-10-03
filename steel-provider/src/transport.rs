@@ -85,10 +85,12 @@ impl Drop for SocketFileGuard {
 /// digits (a port), e.g. `0.0.0.0:4096` or `[::1]:4096`; anything else is
 /// treated as a Unix socket file path.
 pub(crate) fn parse_endpoint(arg: &str) -> Endpoint {
-    if let Some(idx) = arg.rfind(':') {
-        if idx > 0 && idx < arg.len() - 1 && arg[idx + 1..].bytes().all(|b| b.is_ascii_digit()) {
-            return Endpoint::Tcp(arg.to_string());
-        }
+    if let Some(idx) = arg.rfind(':')
+        && idx > 0
+        && idx < arg.len() - 1
+        && arg[idx + 1..].bytes().all(|b| b.is_ascii_digit())
+    {
+        return Endpoint::Tcp(arg.to_string());
     }
     Endpoint::Unix(PathBuf::from(arg))
 }
