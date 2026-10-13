@@ -139,17 +139,20 @@ class EndToEndTest {
 
         instance.setGenerator(SteelWorldGenProvider.getGenerator(42L));
 
-        // Seed 42: a dark_oak trunk straddles z=16 between chunks (6,0) and (6,1)
-        // at world x=111, y=74..76, and its canopy crosses z=16 at x=108..111, y=77..79.
-        instance.loadChunk(new Pos(6 * 16, 64, 0)).join();
-        instance.loadChunk(new Pos(6 * 16, 64, 16)).join();
+        int viewDistance = 8;
+        for (int cx = -viewDistance; cx <= viewDistance; cx++) {
+            for (int cz = -viewDistance; cz <= viewDistance; cz++) {
+                instance.loadChunk(new Pos(cx * 16, 64, cz * 16)).join();
+            }
+        }
 
-        String leftSide = instance.getBlock(111, 75, 15).key().value();
-        String rightSide = instance.getBlock(111, 75, 16).key().value();
-        assertEquals("dark_oak_log", leftSide, "trunk block south of border");
-        assertEquals("dark_oak_log", rightSide, "trunk block north of border");
+        // Seed 42: a dark_oak trunk straddles z=16 between chunks (-8,0) and
+        // (-8,1) at world x=-120, y=70..74 (both halves present on either side of
+        // the seam), and its canopy crosses z=16 at x=-123..-116, y=76..78.
+        assertTrue(instance.getBlock(-120, 74, 15).compare(Block.DARK_OAK_LOG), "trunk block south of border");
+        assertTrue(instance.getBlock(-120, 74, 16).compare(Block.DARK_OAK_LOG), "trunk block north of border");
 
-        assertTrue(instance.getBlock(110, 78, 15).compare(Block.DARK_OAK_LEAVES), "canopy south of border");
-        assertTrue(instance.getBlock(110, 78, 16).compare(Block.DARK_OAK_LEAVES), "canopy north of border");
+        assertTrue(instance.getBlock(-119, 78, 15).compare(Block.DARK_OAK_LEAVES), "canopy south of border");
+        assertTrue(instance.getBlock(-119, 78, 16).compare(Block.DARK_OAK_LEAVES), "canopy north of border");
     }
 }

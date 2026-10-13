@@ -11,6 +11,7 @@ use steel_core::chunk::Chunk;
 use steel_core::chunk::paletted_container::{BiomePalette, BlockPalette};
 use steel_core::chunk::section::{ChunkSection, SectionHolder, Sections};
 use steel_core::chunk::status::ChunkStatus;
+use steel_core::entity::damage::DamageHistory;
 use steel_core::entity::init_entities;
 use steel_core::level_data::{GameTimeSource, WorldGenerationSettings};
 use steel_core::world::{World, WorldConfig, WorldStorageConfig};
@@ -87,6 +88,9 @@ pub struct WorldgenContext {
     /// Kept alive so [`Drop`] can drain in-flight chunk-runtime tasks before
     /// the world is dropped.
     runtime: Arc<tokio::runtime::Runtime>,
+    /// Server-owned damage history. The world only holds a weak reference, so
+    /// the caller must retain it for as long as the world runs.
+    _damage_history: Arc<DamageHistory>,
     /// Steel-core requires `ChunkMap::advance_scheduling` to be driven from a
     /// single thread; this is that thread.
     driver: Option<std::thread::JoinHandle<()>>,
@@ -146,6 +150,7 @@ impl WorldgenContext {
             min_y: dim_type.min_y,
             height: dim_type.height,
         };
+        let damage_history = Arc::new(DamageHistory::default());
         let world = runtime
             .block_on(World::new_with_config(
                 runtime.clone(),
@@ -153,6 +158,7 @@ impl WorldgenContext {
                 dim_type,
                 seed as i64,
                 WorldConfig {
+                    damage_history: Arc::clone(&damage_history),
                     game_time_source: GameTimeSource::Primary,
                     storage: WorldStorageConfig::RamOnly,
                     level_data_path: None,
@@ -200,6 +206,7 @@ impl WorldgenContext {
             requests,
             world,
             runtime,
+            _damage_history: damage_history,
             driver: Some(driver),
             driver_stop,
         }

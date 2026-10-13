@@ -4,7 +4,7 @@ lockfile = true
 # The Minestom `data` version the pinned SteelMC (Cargo.toml) is built against.
 # When this version differs from the Minestom version, block state and biome IDs are converted before being sent over the wire.
 [vars]
-minecraft_data_from = "26.2-rv3"
+minecraft_data_from = "26.3-rv1"
 
 [tools]
 "cargo:cargo-zigbuild" = "0.23.0"
@@ -89,7 +89,13 @@ flag "-s --static" default=#false help="Also cross-compile the statically linked
 outputs = []
 depends = ["compile-rust{{ ' --release' if usage.release else '' }}{{ ' --static' if usage.static else '' }}"]
 dir = "steel-provider"
-run = "cargo test{{ ' --release' if usage.release else '' }}"
+run = """
+set -eu
+# Data-jar paths resolved by `minecraft-data` (block/biome registry data).
+. ../java-client/minestom/build/minecraft-data.env
+export MINESTOM_DATA_FROM_JAR MINESTOM_DATA_TO_JAR
+cargo test{{ ' --release' if usage.release else '' }}
+"""
 
 [tasks.test-java]
 usage = '''
